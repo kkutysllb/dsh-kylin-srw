@@ -11,7 +11,7 @@
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { ServiceError, type SrwService } from './service.ts'
+import { ServiceError, SRW_VERSION, type SrwService } from './service.ts'
 
 export const RPC_CHANNEL = '/dsh-kylin-srw'
 
@@ -47,6 +47,15 @@ function record(value: unknown): Record<string, unknown> {
 
 function reqString(body: Record<string, unknown>, key: string): string {
   const value = body[key]
+  if (typeof value !== 'string' || value === '' || value.length > 5000) {
+    throw new ServiceError('INVALID', `${key} must be a non-empty string (≤5000)`)
+  }
+  return value
+}
+
+function optString(body: Record<string, unknown>, key: string): string | undefined {
+  const value = body[key]
+  if (value === undefined) return undefined
   if (typeof value !== 'string' || value === '' || value.length > 5000) {
     throw new ServiceError('INVALID', `${key} must be a non-empty string (≤5000)`)
   }
@@ -204,6 +213,37 @@ export async function handleSrwRpc(
         const body = record(payload)
         return ok(await service.diagContains(reqString(body, 'root'), reqString(body, 'target')))
       }
+      case 'root.get':
+        return ok({
+          rootDir: service.currentRoot() ?? '',
+          global: service.indexGlobal(),
+          projects: await service.workspace.list(),
+          caps: service.caps(),
+          info: service.info(SRW_VERSION),
+        })
+      case 'root.set':
+        return ok(await service.setRoot(reqString(record(payload), 'path')))
+      case 'project.create': {
+        const body = record(payload)
+        const field = optString(body, 'field')
+        return ok(await service.workspace.create({
+          slug: reqString(body, 'slug'),
+          title: reqString(body, 'title'),
+          ...(field === undefined ? {} : { field }),
+        }))
+      }
+      case 'project.list':
+        return ok(await service.workspace.list())
+      case 'project.open':
+        return ok(await service.openProject(reqString(record(payload), 'slug')))
+      case 'project.rename': {
+        const body = record(payload)
+        return ok(await service.workspace.rename(reqString(body, 'slug'), reqString(body, 'title')))
+      }
+      case 'project.remove':
+        return ok({ removed: await service.workspace.remove(reqString(record(payload), 'slug')).then(() => true) })
+      case 'overview':
+        return ok(await service.overview())
       case 'diag.schedule.create': {
         const body = record(payload)
         const afterSeconds = optNumber(body, 'afterSeconds')
@@ -231,6 +271,3 @@ export async function handleSrwRpc(
     return toErrorResult(error, signal.aborted)
   }
 }
-
-/** 与 package.json 同步维护；单点仅供 diag.info 使用。 */
-export const SRW_VERSION = '0.0.1'

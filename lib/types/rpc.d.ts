@@ -42,6 +42,4 @@ export interface SrwHostContext {
 export declare function registerSrwRpc(ctx: SrwHostContext, service: SrwService): () => Promise<void>;
 /** One endpoint dispatch — exported for direct unit tests. */
 export declare function handleSrwRpc(service: SrwService, endpoint: string, payload: unknown, signal: AbortSignal): Promise<RpcResult<unknown>>;
-/** 与 package.json 同步维护；单点仅供 diag.info 使用。 */
-export declare const SRW_VERSION = "0.0.1";
 export {};

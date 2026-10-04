@@ -80,6 +80,67 @@ test('diagContains：resolve→contains 真值测量；越界 false、能力缺�
   assert.match(bad.detail ?? '', /enoent/)
 })
 
+test('handleSrwRpc R2：root.set/get、project 五端点、overview', async () => {
+  const { mkdtemp, rm } = await import('node:fs/promises')
+  const { tmpdir } = await import('node:os')
+  const root = await mkdtemp(join(tmpdir(), 'srw-r2-'))
+  try {
+    const fsLike = {
+      resolve: (rel: string, opts?: { cwd?: string }) => ({
+        key: nodePath.resolve(opts?.cwd ?? process.cwd(), rel),
+      }),
+      contains: (parent: { key: string }, child: { key: string }) => {
+        const p = nodePath.resolve(parent.key)
+        const c = nodePath.resolve(child.key)
+        return c === p || c.startsWith(`${p}/`)
+      },
+    }
+    const service = await SrwService.open({ fs: fsLike }, {})
+    const signal = new AbortController().signal
+    const call = async (endpoint: string, payload?: unknown) =>
+      (await handleSrwRpc(service, endpoint, payload, signal)) as { ok: boolean; value?: unknown; error?: { code: string } }
+
+    // root.set → root.get
+    const set = await call('root.set', { path: root })
+    assert.equal(set.ok, true)
+    const got = await call('root.get')
+    assert.equal(got.ok, true)
+    const gotValue = got.value as { rootDir: string; projects: unknown[]; caps: unknown[]; info: { version: string } }
+    assert.equal(gotValue.rootDir, root)
+    assert.deepEqual(gotValue.projects, [])
+    assert.ok(Array.isArray(gotValue.caps))
+    assert.equal(gotValue.info.version, '0.0.1')
+    // root.set 越界 → INVALID 语义错误（ok:false）
+    const badSet = await call('root.set', { path: '/nonexistent-srw-xyz/deeper' })
+    assert.equal(badSet.ok, false)
+    // project.create → list → open → rename → remove
+    assert.equal((await call('project.create', { slug: 'epic', title: 'Epic', field: 'nlp' })).ok, true)
+    const list = await call('project.list')
+    assert.equal((list.value as { slug: string }[]).length, 1)
+    const opened = await call('project.open', { slug: 'epic' })
+    assert.equal((opened.value as { title: string }).title, 'Epic')
+    assert.equal(service.indexGlobal().activeProject, 'epic')
+    const renamed = await call('project.rename', { slug: 'epic', title: 'Epic2' })
+    assert.equal((renamed.value as { title: string }).title, 'Epic2')
+    assert.equal((await call('project.remove', { slug: 'epic' })).ok, true)
+    assert.equal(((await call('project.list')).value as unknown[]).length, 0)
+    // overview 形状
+    const overview = await call('overview')
+    const ov = overview.value as { rootDir: string; projectCount: number; activeProject: string; capsOk: number; capsTotal: number; version: string; offlineMode: boolean }
+    assert.equal(ov.rootDir, root)
+    assert.equal(ov.projectCount, 0)
+    assert.equal(ov.capsTotal, ov.capsOk + (ov.capsTotal - ov.capsOk))
+    assert.equal(ov.version, '0.0.1')
+    // 入参校验：缺 path/slug → INVALID
+    assert.equal((await call('root.set', {})).error?.code, 'INVALID')
+    assert.equal((await call('project.open', {})).error?.code, 'INVALID')
+    assert.equal((await call('project.open', { slug: 'ghost' })).error?.code, 'NOT_FOUND')
+    await service.dispose()
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 test('writeBinary：ctx.fs.writeBytes 可用则走 ctx.fs；否则 node:fs 原子落盘', async () => {
   let ctxFsPath = ''
   const viaCtx = await writeBinary({ writeBytes: async (path: string) => { ctxFsPath = path } }, '/tmp/x.bin', new Uint8Array([1]))

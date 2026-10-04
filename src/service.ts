@@ -11,6 +11,9 @@ import { hostHome, type SrwFsLike, assertInsideRoot } from './host.ts'
 import { WorkspaceStore } from './workspace/project.ts'
 import { readRootConfig, writeRootConfig } from './workspace/root.ts'
 import { openSrwIndex, type SrwIndexDomain, type SrwIndexGlobal } from './store.ts'
+/** 与 package.json 同步维护；diag.caps 的 info.version 数据源。 */
+export const SRW_VERSION = '0.0.1'
+
 export interface SrwConfig {
   /** 科研总根；空 = 首次由面板引导选择（M1）。 */
   readonly rootDir?: string
@@ -39,6 +42,8 @@ export interface SrwInfo {
 export class SrwService {
   /** storage 全局里的总根（Task 1.4 srw_index 写入；config 缺省时的回落源）。 */
   private storageRootDir: string | undefined
+  /** 活动项目的内存镜像（index 缺席的降级态下进程内仍然生效）。 */
+  private activeProjectMem = ''
   /** srw_index 域 handle（storageDomain 不可达时保持 undefined，功能降级：
   * rootDir 仅来自 patch config、activeProject 不持久——见 open 的降级注释）。 */
   private index: SrwIndexDomain | undefined
@@ -99,7 +104,7 @@ export class SrwService {
   /** srw_index 全局快照（index 缺席时以内存判定兜底）。 */
   indexGlobal(): SrwIndexGlobal {
     if (this.index !== undefined) return this.index.global.get()
-    return { rootDir: this.currentRoot() ?? '', activeProject: '' }
+    return { rootDir: this.currentRoot() ?? '', activeProject: this.activeProjectMem }
   }
 
   /** root.set：路径自检（resolve→contains 自含 + 可写性经 root.json 落盘证明）
@@ -114,7 +119,7 @@ export class SrwService {
     return next
   }
 
-  /** project.open：元数据 + activeProject 持久 + projectCache 投影。 */
+  /** project.open：元数据 + activeProject 持久 + project_cache 投影。 */
   async openProject(slug: string): Promise<unknown> {
     const meta = await this.workspace.open(slug)
     const record = {
@@ -124,11 +129,47 @@ export class SrwService {
       updatedAt: meta.updatedAt,
     }
     const next: SrwIndexGlobal = { ...this.indexGlobal(), activeProject: record.slug }
+    this.activeProjectMem = record.slug
     if (this.index !== undefined) {
       await this.index.global.set(next)
       await this.index.table('project_cache').put(record.slug, record)
     }
     return meta
+  }
+
+  /** 当前活动项目的 stage（轻投影：只读 project_cache，不扫盘）。 */
+  activeStage(): string | undefined {
+    const active = this.indexGlobal().activeProject
+    if (active === '' || this.index === undefined) return undefined
+    const cached = this.index.table('project_cache').get(active) as { stage?: string } | undefined
+    return cached?.stage
+  }
+
+  /** overview（≤200ms 轻投影，5s 轮询面）。 */
+  async overview(): Promise<{
+    rootDir: string
+    projectCount: number
+    activeProject: string
+    activeStage?: string
+    capsOk: number
+    capsTotal: number
+    version: string
+    offlineMode: boolean
+  }> {
+    const projects = await this.workspace.list()
+    const caps = collectCaps(this.ctx)
+    const global = this.indexGlobal()
+    const stage = this.activeStage()
+    return {
+      rootDir: this.currentRoot() ?? '',
+      projectCount: projects.length,
+      activeProject: global.activeProject,
+      ...(stage === undefined ? {} : { activeStage: stage }),
+      capsOk: caps.filter(row => row.available).length,
+      capsTotal: caps.length,
+      version: SRW_VERSION,
+      offlineMode: this.config.offlineMode === true,
+    }
   }
 
   /** 轻量探活（`diag.ping` 端点）。 */

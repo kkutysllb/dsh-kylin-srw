@@ -8,6 +8,8 @@
 import { type CapRow } from './diag.ts';
 import { WorkspaceStore } from './workspace/project.ts';
 import { type SrwIndexGlobal } from './store.ts';
+/** 与 package.json 同步维护；diag.caps 的 info.version 数据源。 */
+export declare const SRW_VERSION = "0.0.1";
 export interface SrwConfig {
     /** 科研总根；空 = 首次由面板引导选择（M1）。 */
     readonly rootDir?: string;
@@ -36,6 +38,8 @@ export declare class SrwService {
     readonly workspace: WorkspaceStore;
     /** storage 全局里的总根（Task 1.4 srw_index 写入；config 缺省时的回落源）。 */
     private storageRootDir;
+    /** 活动项目的内存镜像（index 缺席的降级态下进程内仍然生效）。 */
+    private activeProjectMem;
     /** srw_index 域 handle（storageDomain 不可达时保持 undefined，功能降级：
     * rootDir 仅来自 patch config、activeProject 不持久——见 open 的降级注释）。 */
     private index;
@@ -52,8 +56,21 @@ export declare class SrwService {
     /** root.set：路径自检（resolve→contains 自含 + 可写性经 root.json 落盘证明）
     * → root.json（根内配置）→ srw_index 全局（「哪个根」的持久记忆）→ 内存收编。 */
     setRoot(path: string): Promise<SrwIndexGlobal>;
-    /** project.open：元数据 + activeProject 持久 + projectCache 投影。 */
+    /** project.open：元数据 + activeProject 持久 + project_cache 投影。 */
     openProject(slug: string): Promise<unknown>;
+    /** 当前活动项目的 stage（轻投影：只读 project_cache，不扫盘）。 */
+    activeStage(): string | undefined;
+    /** overview（≤200ms 轻投影，5s 轮询面）。 */
+    overview(): Promise<{
+        rootDir: string;
+        projectCount: number;
+        activeProject: string;
+        activeStage?: string;
+        capsOk: number;
+        capsTotal: number;
+        version: string;
+        offlineMode: boolean;
+    }>;
     /** 轻量探活（`diag.ping` 端点）。 */
     ping(): {
         readonly pong: true;
