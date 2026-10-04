@@ -215,7 +215,7 @@ export function DiagView({ ctx }: { readonly ctx: ClientContext }): React.ReactE
       <p className='srw-sub'>
         {info === null
           ? '宿主信息加载中…'
-          : `v${String(info['version'] ?? '?')} · 通道 ${String((info['home'] as Record<string, unknown> | undefined)?.['channel'] ?? '?')} · home ${String((info['home'] as Record<string, unknown> | undefined)?.['home'] ?? '?')} · 离线模式 ${info['offlineMode'] === true ? '开' : '关'}`}
+          : `v${String(info['version'] ?? '?')} · 通道 ${String((info['home'] as Record<string, unknown> | undefined)?.['channel'] ?? '?')} · home ${String((info['home'] as Record<string, unknown> | undefined)?.['home'] ?? '') === '' ? '(未判定)' : String((info['home'] as Record<string, unknown>)['home'])} · 离线模式 ${info['offlineMode'] === true ? '开' : '关'}`}
         {rpcError !== null ? <span style={{ color: 'var(--srw-error)' }}> · RPC：{rpcError}</span> : null}
       </p>
 

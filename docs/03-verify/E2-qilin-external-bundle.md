@@ -37,16 +37,30 @@
      ① `package.json` → `dependencies` 记 `"dsh-kylin-srw": "link:<abs>"`；
      ② `pnpm-lock.yaml` → `importers..dependencies` 插条目（`specifier` = 绝对 link，`version` = `link:../../../kk_Projects/dsh-kylin-srw` 相对形态）；
      ③ `node_modules/dsh-kylin-srw` → 符号链接 `../../../../kk_Projects/dsh-kylin-srw`。
-   - 三件套已于 2026-10-04 18:11 补齐；**待用户完全重启桌面端复验**（预期：异常消失、侧栏出现「科研工作台」）。
+   - 三件套已于 2026-10-04 18:11 补齐；**18:13 用户重启桌面端复验 ✅ 通过**（见下「DSH 通道矩阵」）。
    - `dev-install.mjs` 的 fallback 已固化为该三件套。
+
+## DSH 通道矩阵（2026-10-04 18:12–18:13，桌面端，✅ 全部通过）
+
+| 判据 | 结果 |
+|---|---|
+| 三件套手改记账后装载 | ✅ 插件正常（异常消除），面板渲染成功 |
+| `client.inject` 5 个 bundle 名单 | ✅ 生效（10 个客户端服务全部注入可用） |
+| RPC `/dsh-kylin-srw` 往返 | ✅ `diag.caps OK（27 行）`；`connection`/`webServer`/`reflect` 绿 |
+| 主区 keyed 面板 | ✅ `panelInfo = {"activePanelId":"srw"}`（与麒麟侧一致） |
+| 未注入服务形态 | ✅ 同麒麟：抛错 `cannot get property "X" without inject` |
+
+**E2 裁定：全部主判据双通道通过，RISK-2 关闭。** 剩余待补仅：故意删名的失败形态、HMR 热换边界（低危，可并入 M1 日常）。
+
+补充（hostHome 已修）：DSH 桌面端进程 `QILIN_HOME`/`DSH_HOME` **都不设** → 旧兜底硬编 `~/.qilin` 造成显示误导（「home ~/.qilin」出现在 DSH 端）。已改为 unknown 时不猜（home 显示「未判定」）；麒麟 compat pin 导致的通道误显示（麒麟侧显示 'dsh'）为已知限制，M1 换正向信号。
 
 ## 待补（不阻塞 M1 开工）
 
 1. 故意删一个 `client.inject` bundle 名/服务名的失败形态（响亮 vs 静默）；
 2. client 产物热换边界（500ms stat 轮询）与 host 变更需重启的实测确认；
-3. DSH 通道同矩阵（桌面端重启后跑同一诊断面板截图归档）；
-4. `~/.dsh` 侧 DSH_HOME/QILIN_HOME 环境形态（为 hostHome 修复取证）。
+3. ~~DSH 通道同矩阵~~ ✅ 已完成（见上「DSH 通道矩阵」）；
+4. ~~`~/.dsh` 侧 DSH_HOME/QILIN_HOME 环境形态~~ ✅ 已实测：**两个 env 都不设**（hostHome unknown 分支即此形态；兜底显示误导已修）。
 
-## RISK-2 裁定建议
+## RISK-2 裁定
 
-**高 → 低**：麒麟通道对外部自建 bundle 的装载、`link:` 记账、服务注入全部实证通过。残余风险只剩「DSH 通道桌面端」与「缺名失败形态」两项低危确认。
+**高 → 关闭**：麒麟 web 与 DSH 桌面端两通道对外部自建 bundle 的装载、记账（link: 自动 / 三件套手改）、服务注入全部实证通过。残余仅「缺名失败形态」「HMR 边界」两项低危观察项，并入 M1 日常。

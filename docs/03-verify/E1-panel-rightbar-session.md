@@ -9,10 +9,10 @@
 
 | # | 项（0201 Task 0.6 Step 2 编号） | 期望（0102 源码结论） | 实测 |
 |---|---|---|---|
-| 1 | 面板激活时 `layout.panelInfo.activePanelId` | `'srw'`（非 null） | ✅ `{"activePanelId":"srw"}`（两次点按一致） |
-| 8 | RPC 通道往返（宿主服务可达性） | `webServer.register` 直连路径可用 | ✅ `diag.caps OK（27 行）`，`connection`/`webServer`/`reflect` 绿 |
-| — | 客户端 10 服务注入 | vibe 同款名单有效 | ✅ 10/10 可用（`slots/connection/locale/sessions/uiWorkspace/workspaces/remote/remote.session/modelDirectories/layout`） |
-| — | 未注入服务的访问形态 | （源码未明说） | ✅ 实测**抛错** `cannot get property "X" without inject` → 详录 [E2](E2-qilin-external-bundle.md) 新事实 1 |
+| 1 | 面板激活时 `layout.panelInfo.activePanelId` | `'srw'`（非 null） | ✅ **双通道复现**：麒麟 web 18:05 + DSH 桌面端 18:13 均 `{"activePanelId":"srw"}` |
+| 8 | RPC 通道往返（宿主服务可达性） | `webServer.register` 直连路径可用 | ✅ 双通道 `diag.caps OK（27 行）`，`connection`/`webServer`/`reflect` 绿 |
+| — | 客户端 10 服务注入 | vibe 同款名单双通道有效 | ✅ 麒麟 10/10 + DSH 桌面端 10/10 |
+| — | 未注入服务的访问形态 | （源码未明说） | ✅ 双通道一致：**抛错** `cannot get property "X" without inject` → 详录 [E2](E2-qilin-external-bundle.md) 新事实 1 |
 
 **判定**：0102 ADR-10 的前提成立——主区 keyed 面板激活后 `activePanelId !== null`，按源码推论此时右栏绑定会解绑（`show(undefined)`）。主区方案可用，面板盒模型、样式、滚动在实机上表现正常（截图）。
 

@@ -6,8 +6,8 @@
  * inject——不做 dsh-kylin-automation 那样的「拿不到的服务」。
  */
 
-import { collectCaps, hostHomeFromEnv, type CapRow } from './diag.ts'
-import { homedir } from 'node:os'
+import { collectCaps, type CapRow } from './diag.ts'
+import { hostHome } from './host.ts'
 
 export interface SrwConfig {
   /** 科研总根；空 = 首次由面板引导选择（M1）。 */
@@ -56,7 +56,7 @@ export class SrwService {
       version,
       offlineMode: this.config.offlineMode === true,
       rootDir: this.config.rootDir ?? '',
-      home: hostHomeFromEnv(process.env as Record<string, string | undefined>, homedir()),
+      home: hostHome(),
     }
   }
 

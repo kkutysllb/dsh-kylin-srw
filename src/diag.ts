@@ -61,15 +61,3 @@ function probe(ctx: unknown, path: string): CapRow {
 export function collectCaps(ctx: unknown): readonly CapRow[] {
   return HOST_SERVICE_PATHS.map(path => probe(ctx, path))
 }
-
-/** 宿主 home 口径（0102 §5.3：双通道 home 不同，经此单点解析，不硬编码）。 */
-export function hostHomeFromEnv(env: Record<string, string | undefined>, homedir: string): {
-  channel: 'qilin' | 'dsh' | 'unknown'
-  home: string
-} {
-  const qilin = env['QILIN_HOME'] ?? `${homedir}/.qilin`
-  const dsh = env['DSH_HOME'] ?? `${homedir}/.dsh`
-  if (env['QILIN_HOME'] !== undefined) return { channel: 'qilin', home: qilin }
-  if (env['DSH_HOME'] !== undefined) return { channel: 'dsh', home: dsh }
-  return { channel: 'unknown', home: `${homedir}/.qilin` }
-}

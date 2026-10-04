@@ -5,11 +5,11 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
-import { homedir, tmpdir } from 'node:os'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as nodePath from 'node:path'
-import { collectCaps, hostHomeFromEnv } from '../src/diag.ts'
-import { assertInsideRoot, PathSafetyError, writeBinary } from '../src/host.ts'
+import { collectCaps } from '../src/diag.ts'
+import { assertInsideRoot, hostHome, PathSafetyError, writeBinary } from '../src/host.ts'
 import { SrwService } from '../src/service.ts'
 import { handleSrwRpc, registerSrwRpc } from '../src/rpc.ts'
 
@@ -41,13 +41,14 @@ test('collectCaps：存在服务 true、缺席服务 false、路径探测不抛�
   assert.equal(collectCaps(hostile).every(row => row.available === false), true)
 })
 
-test('hostHomeFromEnv：QILIN_HOME 优先，其次 DSH_HOME，最后 ~/.qilin 兜底', () => {
-  assert.deepEqual(hostHomeFromEnv(fakeEnv({ QILIN_HOME: '/q', DSH_HOME: '/d' }), homedir()),
+test('hostHome：QILIN_HOME 优先，其次 DSH_HOME；都无则 unknown 且不猜 home', () => {
+  assert.deepEqual(hostHome(fakeEnv({ QILIN_HOME: '/q', DSH_HOME: '/d' })),
     { channel: 'qilin', home: '/q' })
-  assert.deepEqual(hostHomeFromEnv(fakeEnv({ DSH_HOME: '/d' }), homedir()),
+  assert.deepEqual(hostHome(fakeEnv({ DSH_HOME: '/d' })),
     { channel: 'dsh', home: '/d' })
-  assert.deepEqual(hostHomeFromEnv(fakeEnv({ QILIN_HOME: undefined, DSH_HOME: undefined }), homedir()),
-    { channel: 'unknown', home: `${homedir()}/.qilin` })
+  // DSH 桌面端实测形态（两个 env 都不设）：unknown 且 home 空（不硬编 ~/.qilin 误导）
+  assert.deepEqual(hostHome(fakeEnv({ QILIN_HOME: undefined, DSH_HOME: undefined })),
+    { channel: 'unknown', home: '' })
 })
 
 test('assertInsideRoot：包含放行，../ 与绝对注入拒绝，能力缺失 fail-closed', async () => {

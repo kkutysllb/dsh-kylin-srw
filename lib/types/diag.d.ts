@@ -10,8 +10,3 @@ export interface CapRow {
     readonly detail: string;
 }
 export declare function collectCaps(ctx: unknown): readonly CapRow[];
-/** 宿主 home 口径（0102 §5.3：双通道 home 不同，经此单点解析，不硬编码）。 */
-export declare function hostHomeFromEnv(env: Record<string, string | undefined>, homedir: string): {
-    channel: 'qilin' | 'dsh' | 'unknown';
-    home: string;
-};

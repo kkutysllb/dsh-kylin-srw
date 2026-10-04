@@ -16,7 +16,14 @@ export interface SrwFsLike {
     contains?(parent: string, child: string): unknown;
     writeBytes?(path: string, data: Uint8Array): unknown;
 }
-/** 宿主 home 口径：QILIN_HOME → DSH_HOME → ~/.qilin 兜底。 */
+/** 宿主 home 口径（仅诊断显示用；数据目录一律经 storageDomain，不经此函数）。
+ *
+ * 已知限制（E2 实测，2026-10-04）：麒麟启动器恒把 `DSH_HOME` pin 到 QiLin home
+ * （app-boot/src/index.ts:263 的 dsh-compat 层）且不设 `QILIN_HOME` →
+ * env 判定结构性不可靠：麒麟进程会被判成 'dsh'，DSH 桌面端（两个 env 都不设）
+ * 落 'unknown'。收敛前不猜：unknown 时 home 返回空串，M1 换正向信号
+ * （候选：loader 服务身份 / argv 指纹）后此注释作废。
+ */
 export declare function hostHome(env?: Record<string, string | undefined>): {
     channel: 'qilin' | 'dsh' | 'unknown';
     home: string;
