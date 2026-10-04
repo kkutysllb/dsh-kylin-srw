@@ -380,27 +380,43 @@ export function WorkbenchView({ ctx }: { readonly ctx: ClientContext }): React.R
       '完成后简短汇报：新增几条、去重几条、有无撤稿标红。',
     ].join('')
     type AnyFn = (...args: unknown[]) => unknown
-    try {
+    const withTimeout = async <T,>(promise: Promise<T> | T, ms = 4000): Promise<T> =>
+      await Promise.race([Promise.resolve(promise), new Promise<never>((_, reject) => { setTimeout(() => { reject(new Error('timeout')) }, ms) })])
+    // 路径 A（0102 §9.3 原文）：retain→binding。面板占主区时会话面可能未挂载
+    // （ready 永不 resolve——实测），4s 超时降级路径 B；两路都断才报错。
+    const tryPath = async (usePathB: boolean): Promise<void> => {
       const anySessions = sessions as unknown as Record<string, unknown>
-      const ref = (anySessions['retain'] as AnyFn).call(sessions, current, { source: 'srw' }) as { ready?: Promise<unknown>; release?: () => void } | undefined
-      if (ref?.ready !== undefined) await ref.ready
-      const bound = (anySessions['binding'] as AnyFn).call(sessions, current) as { ctx?: unknown } | undefined
-      const carrier = bound?.ctx
-      ref?.release?.()
-      if (carrier === undefined) {
-        setError('binding.ctx 为空（会话未就绪）')
-        return
+      let carrier: unknown
+      if (!usePathB) {
+        const ref = (anySessions['retain'] as AnyFn).call(sessions, current, { source: 'srw' }) as { ready?: Promise<unknown>; release?: () => void } | undefined
+        if (ref?.ready !== undefined) await withTimeout(ref.ready)
+        const bound = (anySessions['binding'] as AnyFn).call(sessions, current) as { ctx?: unknown } | undefined
+        carrier = bound?.ctx
+        ref?.release?.()
+      } else {
+        const ref = sessions.retainAgentScope?.call(sessions, current)
+        const scope = sessions.scope?.call(sessions, current)
+        carrier = scope
+        ref?.release?.()
       }
-      const shell = ctx.conversation.input.for!(carrier)
-      if (shell?.setDraft === undefined || shell.submit === undefined) {
-        setError('input shell 缺 setDraft/submit')
-        return
-      }
+      if (carrier === undefined) throw new Error(usePathB ? '两条通路都拿不到会话输入' : 'binding.ctx 为空')
+      const inputFor = ctx.conversation?.input?.for
+      if (inputFor === undefined) throw new Error('conversation.input.for 不可达')
+      const shell = inputFor(carrier)
+      if (shell?.setDraft === undefined || shell.submit === undefined) throw new Error('input shell 缺 setDraft/submit')
       shell.setDraft(prompt)
       shell.submit()
+    }
+    try {
+      try {
+        await withTimeout(tryPath(false))
+      } catch (pathAError) {
+        await withTimeout(tryPath(true))
+      }
       if (alive.current) setLitNotice('已把检索任务转给当前会话的 Agent（消息已发送，切到会话页看进展）')
     } catch (cause) {
-      if (alive.current) setError(`转给 Agent 失败：${String(cause)}`)
+      const reason = cause instanceof Error && cause.message === 'timeout' ? '会话输入通路超时（面板占主区时请切回会话视图重试）' : String(cause)
+      if (alive.current) setError(`转给 Agent 失败：${reason}`)
     }
   }, [ctx, litQuery, litSource, overview])
 
