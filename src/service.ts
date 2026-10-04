@@ -11,6 +11,7 @@ import { hostHome, type SrwFsLike, assertInsideRoot } from './host.ts'
 import { WorkspaceStore } from './workspace/project.ts'
 import { readRootConfig, writeRootConfig } from './workspace/root.ts'
 import { openSrwIndex, type SrwIndexDomain, type SrwIndexGlobal } from './store.ts'
+import { attachLiterature, type LiteratureService } from './literature/service.ts'
 /** 与 package.json 同步维护；diag.caps 的 info.version 数据源。 */
 export const SRW_VERSION = '0.0.1'
 
@@ -56,6 +57,13 @@ export class SrwService {
     /** 项目 CRUD（目录即真相源）。 */
     readonly workspace: WorkspaceStore,
   ) {}
+
+  private literatureRef: LiteratureService | undefined
+  /** 文献通路（M2：检索/入库/PDF/BibTeX）。惰性装配（getter 自引用安全）。 */
+  get literature(): LiteratureService {
+    if (this.literatureRef === undefined) this.literatureRef = attachLiterature(this)
+    return this.literatureRef
+  }
 
   static async open(ctx: unknown, rawConfig: SrwConfig): Promise<SrwService> {
     const config: SrwConfig = {

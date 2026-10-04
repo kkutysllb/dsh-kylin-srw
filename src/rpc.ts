@@ -246,6 +246,45 @@ export async function handleSrwRpc(
       }
       case 'project.remove':
         return ok({ removed: await service.workspace.remove(reqString(record(payload), 'slug')).then(() => true) })
+      case 'literature.search': {
+        const body = record(payload)
+        const limit = optNumber(body, 'limit')
+        return ok(await service.literature.search(
+          reqString(body, 'source'),
+          reqString(body, 'query'),
+          ...(limit === undefined ? [] : [limit] as const),
+        ))
+      }
+      case 'literature.import': {
+        const body = record(payload)
+        const items = body['items']
+        if (!Array.isArray(items) || items.length === 0 || items.length > 100) {
+          throw new ServiceError('INVALID', 'items 必须是 1..100 的数组')
+        }
+        for (const item of items) {
+          if (typeof item !== 'object' || item === null) throw new ServiceError('INVALID', 'items 元素必须是对象')
+        }
+        return ok(await service.literature.importEntries(
+          reqString(body, 'project'),
+          items as readonly unknown[],
+        ))
+      }
+      case 'literature.fetchPdf':
+        return ok(await service.literature.fetchPdf(
+          reqString(record(payload), 'project'),
+          reqString(record(payload), 'key'),
+        ))
+      case 'literature.lib':
+        return ok({ entries: await service.literature.lib(reqString(record(payload), 'project')) })
+      case 'literature.bibtex': {
+        const body = record(payload)
+        const keys = body['keys']
+        if (keys !== undefined && !Array.isArray(keys)) throw new ServiceError('INVALID', 'keys 必须是数组')
+        return ok(await service.literature.bibtex(
+          reqString(body, 'project'),
+          ...(keys === undefined ? [] : [keys as readonly string[]] as const),
+        ))
+      }
       case 'overview':
         return ok(await service.overview())
       case 'diag.schedule.create': {

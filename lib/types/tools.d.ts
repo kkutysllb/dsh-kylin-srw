@@ -8,8 +8,10 @@
 import { type SrwService } from './service.ts';
 import type { ProjectMeta } from './core/schema.ts';
 export declare const SRW_TOOL_NAME = "srw_project";
-/** 需要人工审批的动作（list/open 豁免）。 */
+export declare const SRW_LIT_TOOL_NAME = "srw_literature";
+/** 需要人工审批的动作（list/open/lib/search/bibtex 豁免）。 */
 export declare const SRW_ASK_ACTIONS: ReadonlySet<string>;
+export declare const SRW_LIT_ASK_ACTIONS: ReadonlySet<string>;
 /** 调用者身份（照 automation callerFrom：从 pre-execute/execute 的 exec 提取）。 */
 export interface ToolCaller {
     readonly cwd?: string | undefined;
@@ -23,7 +25,7 @@ export interface ApprovalAsk {
         readonly zh: string;
     };
 }
-/** 纯函数审批判定（单测面）：非本工具 / 未挂载 / 非敏感动作 → undefined。 */
+/** 纯函数审批判定（单测面）：非本插件工具 / 未挂载 / 非敏感动作 → undefined。 */
 export declare function approvalDecision(exec: {
     readonly name: string;
     readonly arguments?: unknown;
@@ -48,3 +50,5 @@ export interface SrwToolDef {
 }
 /** `srw_project` 单工具四动作定义。 */
 export declare function srwProjectToolDef(service: SrwService): SrwToolDef;
+/** `srw_literature` 四动作工具定义（search/lib 豁免；import/pdf 需 ask）。 */
+export declare function srwLiteratureToolDef(service: SrwService): SrwToolDef;

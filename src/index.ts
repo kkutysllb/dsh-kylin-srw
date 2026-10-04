@@ -15,7 +15,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { registerSrwRpc } from './rpc.ts'
 import { SrwService, type SrwConfig } from './service.ts'
-import { approvalDecision, callerFrom, srwProjectToolDef } from './tools.ts'
+import { approvalDecision, callerFrom, srwProjectToolDef, srwLiteratureToolDef } from './tools.ts'
 import { registerBundledSkills } from './skills.ts'
 
 export const name = 'dsh-kylin-srw'
@@ -47,7 +47,7 @@ export interface Config {
 }
 
 /** 能力通告（一段有界文本，只说工具表与描述说不出的工作流约束）。 */
-const ANNOUNCEMENT = `本机已安装 dsh-kylin-srw 插件（科研工作台）：在科研总根下以「目录即真相源」的方式管理研究项目（slug 目录 + project.json + 文献/论文/实验骨架）。工具 srw_project 提供项目 list/create/open/remove（create/remove 需人工审批；总根未设置时先让用户在 Web 侧边栏「科研工作台」面板选择）。技能 research-idea 是选题工作流：用户讨论研究想法时按其选题卡骨架推进，成形后可建议登记为项目。`
+const ANNOUNCEMENT = `本机已安装 dsh-kylin-srw 插件（科研工作台）：在科研总根下以「目录即真相源」的方式管理研究项目（slug 目录 + project.json + 文献/论文/实验骨架）。工具 srw_project 提供项目 list/create/open/remove（create/remove 需人工审批；总根未设置时先让用户在 Web 侧边栏「科研工作台」面板选择）。技能 research-idea 是选题工作流：用户讨论研究想法时按其选题卡骨架推进，成形后可建议登记为项目。工具 srw_literature 提供文献 search/import/pdf/bibtex（arXiv/OpenAlex/Crossref 三源，自动去重与撤稿标红；import/pdf 需人工审批）。`
 
 /** Mount the SRW host service, its RPC channel, the agent tool, and skills. */
 export async function apply(ctx: Context, rawConfig: Config): Promise<void> {
@@ -107,7 +107,7 @@ export async function apply(ctx: Context, rawConfig: Config): Promise<void> {
       if (agentTools.has(agentId)) return
       const agentCtx = scoped.ctx
       const registered = agentCtx.effect(() => {
-        const removers = [srwProjectToolDef(service)].map(def => agentCtx.tools?.register(def))
+        const removers = [srwProjectToolDef(service), srwLiteratureToolDef(service)].map(def => agentCtx.tools?.register(def))
         return () => {
           for (const remove of [...removers].reverse()) {
             if (typeof remove === 'function') void (remove as () => void)()

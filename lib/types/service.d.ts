@@ -8,6 +8,7 @@
 import { type CapRow } from './diag.ts';
 import { WorkspaceStore } from './workspace/project.ts';
 import { type SrwIndexGlobal } from './store.ts';
+import { type LiteratureService } from './literature/service.ts';
 /** 与 package.json 同步维护；diag.caps 的 info.version 数据源。 */
 export declare const SRW_VERSION = "0.0.1";
 export interface SrwConfig {
@@ -44,6 +45,9 @@ export declare class SrwService {
     * rootDir 仅来自 patch config、activeProject 不持久——见 open 的降级注释）。 */
     private index;
     private constructor();
+    private literatureRef;
+    /** 文献通路（M2：检索/入库/PDF/BibTeX）。惰性装配（getter 自引用安全）。 */
+    get literature(): LiteratureService;
     static open(ctx: unknown, rawConfig: SrwConfig): Promise<SrwService>;
     /** 挂上域 handle 并把持久 rootDir 收编进内存判定（config 仍优先）。 */
     private attachIndex;

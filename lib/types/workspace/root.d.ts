@@ -7,6 +7,8 @@ export interface RootConfig {
     readonly defaultLangPair: 'en-zh' | 'zh-en';
     readonly allowIllustrative: boolean;
     readonly offlineMode: boolean;
+    /** Crossref 礼貌池邮箱（可选，加字段不加版本——0102 §6.3 无迁移纪律）。 */
+    readonly politeMailto?: string;
 }
 export declare const DEFAULT_ROOT: RootConfig;
 export declare function rootConfigPath(rootAbs: string): string;

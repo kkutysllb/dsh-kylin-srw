@@ -51,8 +51,9 @@ function jitter(ms: number): number {
 }
 
 export interface RateGateOptions {
-  /** 账本文件绝对路径（`<root>/.srw/rate-ledger.json`）。 */
-  readonly ledgerPath: string
+  /** 账本文件绝对路径（`<root>/.srw/rate-ledger.json`）；getter 形式支持
+   * 总根运行期变更（setRoot 后账本跟根走）。 */
+  readonly ledgerPath: string | (() => string)
   /** 测试注入：覆盖域间隔（缺省用 DOMAIN_INTERVALS_MS/默认值）。 */
   readonly intervalsOverride?: Readonly<Record<string, number>>
   /** 测试注入：等待函数（fake timer 用）；缺省真 setTimeout。 */
@@ -60,15 +61,20 @@ export interface RateGateOptions {
 }
 
 export class RateGate {
-  private readonly ledgerPath: string
+  private readonly ledgerPath: () => string
   private readonly intervals: Readonly<Record<string, number>>
   private readonly sleepFn: (ms: number) => Promise<void>
   private cache: Ledger | null = null
 
   constructor(options: RateGateOptions) {
-    this.ledgerPath = options.ledgerPath
+    const raw = options.ledgerPath
+    this.ledgerPath = typeof raw === 'function' ? raw : () => raw
     this.intervals = options.intervalsOverride ?? DOMAIN_INTERVALS_MS
     this.sleepFn = options.sleepFn ?? ((ms: number) => new Promise<void>(resolve => { setTimeout(resolve, ms) }))
+  }
+
+  private currentLedgerPath(): string {
+    return this.ledgerPath()
   }
 
   private minInterval(domain: string): number {
@@ -78,7 +84,7 @@ export class RateGate {
   private async loadLedger(): Promise<Ledger> {
     if (this.cache !== null) return this.cache
     try {
-      const parsed: unknown = JSON.parse(await readFile(this.ledgerPath, 'utf8'))
+      const parsed: unknown = JSON.parse(await readFile(this.currentLedgerPath(), 'utf8'))
       if (typeof parsed === 'object' && parsed !== null) {
         const m = parsed as Record<string, unknown>
         if (m['schemaVersion'] === LEDGER_VERSION && typeof m['domains'] === 'object' && m['domains'] !== null) {
@@ -92,14 +98,14 @@ export class RateGate {
   }
 
   private async saveLedger(ledger: Ledger): Promise<void> {
-    await mkdir(dirname(this.ledgerPath), { recursive: true })
-    await atomicWrite(this.ledgerPath, JSON.stringify(ledger, null, 2) + '\n')
+    await mkdir(dirname(this.currentLedgerPath()), { recursive: true })
+    await atomicWrite(this.currentLedgerPath(), JSON.stringify(ledger, null, 2) + '\n')
   }
 
   /** 账本读改写（跨进程持锁——O_EXCL 文件锁对同进程并发同样互斥）。
    * 回调内完成全部判定与更新。 */
   private async mutate<T>(fn: (ledger: Ledger) => T | Promise<T>): Promise<T> {
-    return await withFileLock(`${this.ledgerPath}.lock`, async () => {
+    return await withFileLock(`${this.currentLedgerPath()}.lock`, async () => {
       const ledger = await this.loadLedger()
       const result = await fn(ledger)
       await this.saveLedger(ledger)

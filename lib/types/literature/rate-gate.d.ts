@@ -11,8 +11,9 @@
 /** 各源礼貌间隔（0102 §12）：arXiv 官方要求 3s。 */
 export declare const DOMAIN_INTERVALS_MS: Readonly<Record<string, number>>;
 export interface RateGateOptions {
-    /** 账本文件绝对路径（`<root>/.srw/rate-ledger.json`）。 */
-    readonly ledgerPath: string;
+    /** 账本文件绝对路径（`<root>/.srw/rate-ledger.json`）；getter 形式支持
+     * 总根运行期变更（setRoot 后账本跟根走）。 */
+    readonly ledgerPath: string | (() => string);
     /** 测试注入：覆盖域间隔（缺省用 DOMAIN_INTERVALS_MS/默认值）。 */
     readonly intervalsOverride?: Readonly<Record<string, number>>;
     /** 测试注入：等待函数（fake timer 用）；缺省真 setTimeout。 */
@@ -24,6 +25,7 @@ export declare class RateGate {
     private readonly sleepFn;
     private cache;
     constructor(options: RateGateOptions);
+    private currentLedgerPath;
     private minInterval;
     private loadLedger;
     private saveLedger;

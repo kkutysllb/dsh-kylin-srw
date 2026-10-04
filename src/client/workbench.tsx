@@ -29,6 +29,23 @@ interface ProjectMetaLite {
   readonly field?: string
 }
 
+interface LitCandidateLite {
+  readonly source: string
+  readonly identity: { readonly title: string; readonly year: number; readonly doi?: string; readonly arxivId?: string }
+  readonly authors: readonly string[]
+  readonly venue: string
+  readonly pdfUrl?: string
+  readonly oaUrl?: string
+}
+
+interface LibEntryLite {
+  readonly key: string
+  readonly identity: { readonly title: string; readonly year: number }
+  readonly status: string
+  readonly seenIn: readonly string[]
+  readonly pdf?: { readonly file: string }
+}
+
 interface OverviewLite {
   readonly rootDir: string
   readonly projectCount: number
@@ -75,6 +92,12 @@ export function WorkbenchView({ ctx }: { readonly ctx: ClientContext }): React.R
   const [formTitle, setFormTitle] = useState('')
   const [busy, setBusy] = useState(false)
   const [confirmingSlug, setConfirmingSlug] = useState<string | null>(null)
+  const [litSource, setLitSource] = useState<'arxiv' | 'openalex' | 'crossref'>('arxiv')
+  const [litQuery, setLitQuery] = useState('')
+  const [litResults, setLitResults] = useState<readonly LitCandidateLite[]>([])
+  const [libEntries, setLibEntries] = useState<readonly LibEntryLite[]>([])
+  const [litBusy, setLitBusy] = useState(false)
+  const [litNotice, setLitNotice] = useState<string | null>(null)
   const alive = useRef(true)
   const confirmTimer = useRef<number | undefined>(undefined)
 
@@ -241,6 +264,97 @@ export function WorkbenchView({ ctx }: { readonly ctx: ClientContext }): React.R
     }
   }, [ctx, refreshProjects, confirmingSlug])
 
+  /* ── 文献通路（M2）：检索 / 入库 / 取 PDF / 导出 BibTeX ── */
+  const refreshLib = useCallback(async (slug: string): Promise<void> => {
+    try {
+      const value = await rpc<{ entries?: readonly LibEntryLite[] }>(ctx, 'literature.lib', { project: slug })
+      if (alive.current) setLibEntries(value.entries ?? [])
+    } catch (cause) {
+      if (alive.current) setError(String(cause))
+    }
+  }, [ctx])
+
+  const litSearch = useCallback(async (): Promise<void> => {
+    const query = litQuery.trim()
+    if (query === '') return
+    try {
+      setLitBusy(true)
+      setLitNotice(null)
+      setError(null)
+      const value = await rpc<{ items?: readonly LitCandidateLite[] }>(ctx, 'literature.search', { source: litSource, query, limit: 15 })
+      if (alive.current) {
+        setLitResults(value.items ?? [])
+        setLitNotice(`检索到 ${value.items?.length ?? 0} 条（${litSource}）`)
+      }
+    } catch (cause) {
+      if (alive.current) setError(String(cause))
+    } finally {
+      if (alive.current) setLitBusy(false)
+    }
+  }, [ctx, litQuery, litSource])
+
+  const litImport = useCallback(async (items: readonly LitCandidateLite[]): Promise<void> => {
+    const slug = overview?.activeProject
+    if (slug === undefined || slug === '') {
+      setError('先打开一个项目再入库（项目卡「打开」）')
+      return
+    }
+    try {
+      setLitBusy(true)
+      setError(null)
+      const value = await rpc<{ added: number; duplicates: number; retracted: string[] }>(ctx, 'literature.import', { project: slug, items })
+      if (alive.current) {
+        setLitNotice(`入库完成：新增 ${value.added}，去重跳过 ${value.duplicates}${value.retracted.length > 0 ? `，撤稿标红 ${value.retracted.length}` : ''}`)
+        await refreshLib(slug)
+      }
+    } catch (cause) {
+      if (alive.current) setError(String(cause))
+    } finally {
+      if (alive.current) setLitBusy(false)
+    }
+  }, [ctx, overview, refreshLib])
+
+  const litPdf = useCallback(async (key: string): Promise<void> => {
+    const slug = overview?.activeProject
+    if (slug === undefined || slug === '') return
+    try {
+      setLitBusy(true)
+      setError(null)
+      await rpc(ctx, 'literature.fetchPdf', { project: slug, key })
+      if (alive.current) {
+        setLitNotice('PDF 已落盘 literature/pdf/')
+        await refreshLib(slug)
+      }
+    } catch (cause) {
+      if (alive.current) setError(String(cause))
+    } finally {
+      if (alive.current) setLitBusy(false)
+    }
+  }, [ctx, overview, refreshLib])
+
+  const litBibtex = useCallback(async (): Promise<void> => {
+    const slug = overview?.activeProject
+    if (slug === undefined || slug === '') return
+    try {
+      setLitBusy(true)
+      setError(null)
+      const value = await rpc<{ added: readonly string[]; skippedRetracted: string[] }>(ctx, 'literature.bibtex', { project: slug })
+      if (alive.current) {
+        setLitNotice(`refs.bib 已更新：新增 ${value.added.length} 条${value.skippedRetracted.length > 0 ? `，撤稿跳过 ${value.skippedRetracted.length}` : ''}`)
+      }
+    } catch (cause) {
+      if (alive.current) setError(String(cause))
+    } finally {
+      if (alive.current) setLitBusy(false)
+    }
+  }, [ctx, overview])
+
+  /* 活动项目变化 → 刷新文献库列表 */
+  useEffect(() => {
+    const slug = overview?.activeProject
+    if (slug !== undefined && slug !== '') void refreshLib(slug)
+  }, [overview?.activeProject, refreshLib])
+
   const activeStage = overview?.activeStage
   const rootDir = overview?.rootDir ?? ''
 
@@ -331,6 +445,84 @@ export function WorkbenchView({ ctx }: { readonly ctx: ClientContext }): React.R
             )}
           </>
         )}
+      </div>
+
+      <div className='srw-card'>
+        <h2>文献（{overview?.activeProject === '' || overview?.activeProject === undefined ? '未选项目' : `项目 ${overview.activeProject}`}）</h2>
+        <div className='srw-actions'>
+          <select
+            className='srw-input'
+            value={litSource}
+            onChange={event => { setLitSource(event.target.value as typeof litSource) }}
+          >
+            <option value='arxiv'>arXiv</option>
+            <option value='openalex'>OpenAlex</option>
+            <option value='crossref'>Crossref</option>
+          </select>
+          <input
+            className='srw-input'
+            placeholder='检索词（arXiv 可带 ti:/au:/all: 前缀）'
+            value={litQuery}
+            onChange={event => { setLitQuery(event.target.value) }}
+            onKeyDown={event => { if (event.key === 'Enter') { void litSearch() } }}
+          />
+          <button className='srw-btn primary' disabled={litBusy} onClick={() => { void litSearch() }}>检索</button>
+          <button className='srw-btn' disabled={litBusy || libEntries.length === 0} onClick={() => { void litBibtex() }}>导出 BibTeX</button>
+        </div>
+        {litNotice !== null ? <p className='srw-detail'>{litNotice}</p> : null}
+        {litResults.length > 0 ? (
+          <ul className='srw-projects'>
+            {litResults.map(item => {
+              const key = `${item.source}:${item.identity.doi ?? item.identity.arxivId ?? item.identity.title}`
+              return (
+                <li key={key} className='srw-project'>
+                  <div className='srw-project-main'>
+                    <span className='srw-project-title'>{item.identity.title}</span>
+                    <span className='srw-badge'>{item.identity.year}</span>
+                    {item.pdfUrl !== undefined || item.oaUrl !== undefined ? <span className='srw-badge'>OA</span> : null}
+                  </div>
+                  <div className='srw-project-meta'>
+                    <span>{item.authors.slice(0, 3).join(', ')}{item.authors.length > 3 ? ' 等' : ''}</span>
+                    <span>·</span>
+                    <span>{item.venue === '' ? item.source : item.venue}</span>
+                  </div>
+                  <div className='srw-actions'>
+                    <button className='srw-btn' disabled={litBusy || overview?.activeProject === '' || overview?.activeProject === undefined} onClick={() => { void litImport([item]) }}>入库</button>
+                  </div>
+                </li>
+              )
+            })}
+          </ul>
+        ) : null}
+        {libEntries.length > 0 ? (
+          <>
+            <h2 style={{ marginTop: 10 }}>项目库（{libEntries.length}）</h2>
+            <ul className='srw-projects'>
+              {libEntries.map(entry => (
+                <li key={entry.key} className='srw-project'>
+                  <div className='srw-project-main'>
+                    <span className='srw-project-title'>{entry.identity.title}</span>
+                    <span className={`srw-badge ${entry.status === 'retracted' ? 'bad' : ''}`}>
+                      {entry.status === 'unread' ? '未读' : entry.status === 'has-pdf' ? '有 PDF' : entry.status === 'retracted' ? '已撤稿' : entry.status}
+                    </span>
+                  </div>
+                  <div className='srw-project-meta'>
+                    <span>{entry.identity.year}</span>
+                    <span>·</span>
+                    <span>{entry.seenIn.join('+')}</span>
+                  </div>
+                  <div className='srw-actions'>
+                    {entry.pdf === undefined ? (
+                      <button className='srw-btn' disabled={litBusy} onClick={() => { void litPdf(entry.key) }}>取 PDF</button>
+                    ) : (
+                      <span className='srw-detail'>PDF 已在 literature/pdf/</span>
+                    )}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </>
+        ) : null}
       </div>
 
       {activeStage !== undefined ? (
