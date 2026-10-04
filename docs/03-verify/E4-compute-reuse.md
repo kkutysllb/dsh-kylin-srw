@@ -10,10 +10,12 @@
 ### 第 ③ 级 直连 —— ✅ 通过（主路径成立）
 
 - ✅ `ssh -o BatchMode=yes dsh-wsl2 'echo CONNECTED'` → `CONNECTED`（key 认证、零交互、零凭据读取）。
-- ✅ 环境盘点（V13 WSL 基线）：
+- ✅ 环境盘点（V13 WSL 基线，**2026-10-04 18:58 用户装好 CUDA 驱动后更新**）：
   - OS：WSL2，kernel `6.18.33.2-microsoft-standard-WSL2`，x86_64，host `kkutysllb`；
-  - **`nvidia-smi` 不可用——这台 WSL 当前没有 GPU 透传**：M7 的 GPU 作业（V13 基线、CUDA_VISIBLE_DEVICES 注入）**不能在本机验收**，真实 GPU 运行仍需 `26训练`/`74推理` 在线窗口或给本机装驱动/直通；本机定位调整为「远程执行机制验收 + CPU 型作业」；
-  - `python3 3.14.4` ✓、`bash` ✓、`setsid /usr/bin/setsid` ✓、`node` ✗（实验环境需自带/远端安装）。
+  - **GPU：2× NVIDIA GeForce RTX 4090（24 GB × 2，driver 616.92，compute cap 8.9）**——WSL 内部可见、`libcuda.so.1` 从 python3 加载成功 → **本机即真 GPU 机，M7 的真实 GPU 验收可在此进行**（不再依赖 `26训练`/`74推理` 在线窗口；RISK-10 的 M7 部分大幅缓解）；
+  - ⚠ **WSL PATH 怪癖（Task 7.2 必须处理）**：`nvidia-smi` 在 `/usr/lib/wsl/lib/nvidia-smi`，但非交互 SSH（非 login shell）的 PATH **不含** `/usr/lib/wsl/lib`，裸 `nvidia-smi` 报 `command not found`，`bash -lc` 也不含（无 profile.d 条目）→ **GPU 盘点/作业脚本一律用全路径 `/usr/lib/wsl/lib/nvidia-smi` 或先注入 PATH**；
+  - `python3 3.14.4` ✓、`bash` ✓、`setsid /usr/bin/setsid` ✓、`node` ✗（实验环境需自带/远端安装）；
+  - GPU0 默认被 Windows 侧占用少量显存（实测 1737 MiB）——选卡策略要按 `memory.used` 现值而非假定全空。
 
 ### V12 长任务脱离托管 —— ✅ 全套通过（架构级判据）
 
@@ -40,7 +42,7 @@
 | 项 | 回改 |
 |---|---|
 | 0102 §11.1 | 「WSL 预计不在 hosts.json」**推翻**：已注册于 dev home；补「双 home（`~/.kcoder` + `~/.kcoder-dev`）探测」 |
-| 0102 §11.3 / RISK-10 | 本机 WSL **无 GPU**：M7 真实 GPU 验收仍需远程窗口；本机承担「机制验收 + CPU 作业」 |
+| 0102 §11.3 / RISK-10 | ~~本机 WSL 无 GPU~~ **更新（18:58）**：装驱动后本机 = 2× RTX 4090，**M7 真实 GPU 验收移到本机**，远程主机降为扩容项 |
 | RISK-4 | 「中 → 低」：直连主路径实测通过，三级链只剩增强项 |
 | RISK-13 / V12 | **关闭**：脱离托管 + 偏移续读 + 显式终态全部实测通过 |
 | 0201 Task 7.2 | 补双 home 探测用例；Task 7.5 的偏移续读语义已验证（N=1-based） |
