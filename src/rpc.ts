@@ -200,6 +200,10 @@ export async function handleSrwRpc(
         return ok({ caps: service.caps(), info: service.info(SRW_VERSION) })
       case 'diag.echo':
         return ok({ echoed: payload })
+      case 'diag.contains': {
+        const body = record(payload)
+        return ok(await service.diagContains(reqString(body, 'root'), reqString(body, 'target')))
+      }
       case 'diag.schedule.create': {
         const body = record(payload)
         const afterSeconds = optNumber(body, 'afterSeconds')

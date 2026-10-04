@@ -93,6 +93,8 @@ export function DiagView({ ctx }: { readonly ctx: ClientContext }): React.ReactE
   const [log, setLog] = useState<readonly LogEntry[]>([])
   const [sessionId, setSessionId] = useState('')
   const [busy, setBusy] = useState(false)
+  const [containsRoot, setContainsRoot] = useState('')
+  const [containsTarget, setContainsTarget] = useState('')
 
   const pushLog = useCallback((kind: LogEntry['kind'], text: string): void => {
     setLog(previous => [{ at: new Date().toLocaleTimeString(), kind, text }, ...previous].slice(0, 80))
@@ -266,6 +268,23 @@ export function DiagView({ ctx }: { readonly ctx: ClientContext }): React.ReactE
     pushLog('info', `ctx.settings ${present.present ? '存在' : '未注入（服务名未验证，为避免激活失败不注入）'}；第 10 项的正确载体是 settings.section 槽——本插件已注册「科研工作台（E1 验证）」区块，请在面板占主区时从外壳打开设置页查看能否打开（portal 模态预期）`)
   }, [ctx, pushLog])
 
+  /* ── Task 1.2 / V4：宿主 contains 实测（诊断真值，非护栏）── */
+  const probeContains = useCallback(async (): Promise<void> => {
+    const root = containsRoot.trim()
+    const target = containsTarget.trim()
+    if (root === '' || target === '') {
+      pushLog('bad', 'contains 实测需要 root 与 target 两个路径')
+      return
+    }
+    try {
+      const value = await callRpc(ctx, 'diag.contains', { root, target }) as { contained?: boolean; detail?: string }
+      pushLog(value.contained === true ? 'ok' : 'info',
+        `diag.contains(root=${root}, target=${target}) → ${value.contained === true}（contains 语义）${value.detail !== undefined && value.detail !== '' ? `；detail：${value.detail}` : ''}`)
+    } catch (error: unknown) {
+      pushLog('bad', `diag.contains 失败：${String(error)}`)
+    }
+  }, [ctx, pushLog, containsRoot, containsTarget])
+
   const clientRows = CLIENT_PATHS.map(path => ({ path, ...safeGet(ctx, path) }))
 
   return (
@@ -281,6 +300,21 @@ export function DiagView({ ctx }: { readonly ctx: ClientContext }): React.ReactE
       <div className='srw-card'>
         <h2>宿主能力（RPC diag.caps）</h2>
         <button className='srw-btn primary' disabled={busy} onClick={() => { void refresh() }}>重新探测</button>
+        <div className='srw-actions' style={{ marginTop: 8 }}>
+          <input
+            className='srw-input'
+            placeholder='root（绝对路径）'
+            value={containsRoot}
+            onChange={event => { setContainsRoot(event.target.value) }}
+          />
+          <input
+            className='srw-input'
+            placeholder='target（相对 root 或绝对）'
+            value={containsTarget}
+            onChange={event => { setContainsTarget(event.target.value) }}
+          />
+          <button className='srw-btn' onClick={() => { void probeContains() }}>contains 实测（V4）</button>
+        </div>
         {hostCaps === null
           ? <p className='srw-detail'>{rpcError ?? '加载中…'}</p>
           : (

@@ -41,6 +41,13 @@ export declare class SrwService {
     info(version: string): SrwInfo;
     /** 宿主能力表（`diag.caps` 端点；E1/E2 与 V 系列核对的数据源）。 */
     caps(): readonly CapRow[];
+    /** `diag.contains`（Task 1.2 / V4 实测端点）：宿主 fs 的 resolve→contains
+     * 真值测量。**这是诊断不是护栏**——越界返回 contained:false 而非抛错；
+     * 正式放行必须走 assertInsideRoot（fail-closed）。 */
+    diagContains(rootAbs: string, targetRel: string): Promise<{
+        contained: boolean;
+        detail?: string;
+    }>;
     /** 宿主 schedule 服务面（E3 边界试验专用；经 ctx.get 动态取，不进 inject
      * 名单——避免缺名导致激活失败）。M3 正式接入时再按 ADR-8 定稿。 */
     private schedule;

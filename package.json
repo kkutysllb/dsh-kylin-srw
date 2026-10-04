@@ -58,6 +58,7 @@
     "build": "node scripts/build.mjs",
     "smoke": "node scripts/smoke-plugin.mjs",
     "smoke:negatives": "node scripts/smoke-plugin.mjs --negatives",
+    "test:security": "node --import tsx --test tests/security.test.ts",
     "smoke:dual": "node scripts/smoke-dual-host.mjs",
     "dev:install": "node scripts/dev-install.mjs",
     "check": "npm run typecheck && npm run test && npm run build && npm run smoke"

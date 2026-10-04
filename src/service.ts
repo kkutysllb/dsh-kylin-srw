@@ -7,7 +7,7 @@
  */
 
 import { collectCaps, type CapRow } from './diag.ts'
-import { hostHome } from './host.ts'
+import { hostHome, type SrwFsLike } from './host.ts'
 export interface SrwConfig {
   /** 科研总根；空 = 首次由面板引导选择（M1）。 */
   readonly rootDir?: string
@@ -20,6 +20,10 @@ export class ServiceError extends Error {
     super(message)
     this.name = 'ServiceError'
   }
+}
+
+async function awaited<T>(value: T | Promise<T>): Promise<T> {
+  return await value
 }
 
 export interface SrwInfo {
@@ -62,6 +66,24 @@ export class SrwService {
   /** 宿主能力表（`diag.caps` 端点；E1/E2 与 V 系列核对的数据源）。 */
   caps(): readonly CapRow[] {
     return collectCaps(this.ctx)
+  }
+
+  /** `diag.contains`（Task 1.2 / V4 实测端点）：宿主 fs 的 resolve→contains
+   * 真值测量。**这是诊断不是护栏**——越界返回 contained:false 而非抛错；
+   * 正式放行必须走 assertInsideRoot（fail-closed）。 */
+  async diagContains(rootAbs: string, targetRel: string): Promise<{ contained: boolean; detail?: string }> {
+    const fs = (this.ctx as { fs?: SrwFsLike }).fs
+    if (fs?.resolve === undefined || fs.contains === undefined) {
+      throw new ServiceError('NO_PROVIDER', '宿主 fs.resolve/contains 缺席')
+    }
+    try {
+      const rootTarget = await awaited(fs.resolve(rootAbs))
+      const target = await awaited(fs.resolve(targetRel, { cwd: rootAbs }))
+      return { contained: fs.contains(rootTarget, target) === true }
+    } catch (error: unknown) {
+      // resolve 失败（路径不存在等）：按不可包含上报，附宿主原因。
+      return { contained: false, detail: error instanceof Error ? error.message : String(error) }
+    }
   }
 
   /** 宿主 schedule 服务面（E3 边界试验专用；经 ctx.get 动态取，不进 inject
