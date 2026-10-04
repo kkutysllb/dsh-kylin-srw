@@ -5,6 +5,12 @@
       "description": "科研选题工作流：把一个研究方向从模糊想法推进到可评审的选题卡（问题定义/假设/证据缺口/实验草图）。",
       "whenToUse": "用户想讨论、评估或确定一个研究想法（research idea / 选题 / 开题）时使用。",
       "dir": "research-idea"
+    },
+    {
+      "name": "literature-triage",
+      "description": "文献筛选与入库工作流：把研究方向/论文线索转成三源检索、筛选、入库到指定项目。",
+      "whenToUse": "用户想找论文、查文献、把检索结果入库到科研项目时使用。",
+      "dir": "literature-triage"
     }
   ]
 }

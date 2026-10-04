@@ -350,6 +350,60 @@ export function WorkbenchView({ ctx }: { readonly ctx: ClientContext }): React.R
     }
   }, [ctx, overview])
 
+  /** 断裂修复：把检索意图合成提示词，经 E1 验证的程序化通路
+   * （retain→binding→conversation.input.for().setDraft+submit）直接发给
+   * 当前会话的 Agent——submit() 立即发送并触发 agent 轮次（E1 实测）。 */
+  const litToAgent = useCallback(async (): Promise<void> => {
+    const query = litQuery.trim()
+    if (query === '') {
+      setError('先填检索词再转给 Agent')
+      return
+    }
+    const sessions = ctx.sessions
+    if (sessions === undefined || ctx.conversation?.input?.for === undefined) {
+      setError('会话输入通路不可达（sessions/conversation 未注入）')
+      return
+    }
+    const current = (sessions.list?.getSnapshot?.() as { current?: string } | undefined)?.current
+    if (current === undefined || current === '') {
+      setError('没有打开中的会话——先在左侧开一个会话（agent 任务需要会话承载）')
+      return
+    }
+    const slug = overview?.activeProject
+    const projectClause = slug !== undefined && slug !== ''
+      ? `入库到项目 ${slug}`
+      : '入库前先用 srw_project 工具确认目标项目（list 后选最合适的，没有就提示我创建）'
+    const prompt = [
+      `请用 srw_literature 工具完成一次文献检索与入库（${litSource} 源）。`,
+      `检索词：${query}。取前 5 条。`,
+      `${projectClause}。`,
+      '完成后简短汇报：新增几条、去重几条、有无撤稿标红。',
+    ].join('')
+    type AnyFn = (...args: unknown[]) => unknown
+    try {
+      const anySessions = sessions as unknown as Record<string, unknown>
+      const ref = (anySessions['retain'] as AnyFn).call(sessions, current, { source: 'srw' }) as { ready?: Promise<unknown>; release?: () => void } | undefined
+      if (ref?.ready !== undefined) await ref.ready
+      const bound = (anySessions['binding'] as AnyFn).call(sessions, current) as { ctx?: unknown } | undefined
+      const carrier = bound?.ctx
+      ref?.release?.()
+      if (carrier === undefined) {
+        setError('binding.ctx 为空（会话未就绪）')
+        return
+      }
+      const shell = ctx.conversation.input.for!(carrier)
+      if (shell?.setDraft === undefined || shell.submit === undefined) {
+        setError('input shell 缺 setDraft/submit')
+        return
+      }
+      shell.setDraft(prompt)
+      shell.submit()
+      if (alive.current) setLitNotice('已把检索任务转给当前会话的 Agent（消息已发送，切到会话页看进展）')
+    } catch (cause) {
+      if (alive.current) setError(`转给 Agent 失败：${String(cause)}`)
+    }
+  }, [ctx, litQuery, litSource, overview])
+
   /* 活动项目变化 → 刷新文献库列表 */
   useEffect(() => {
     const slug = overview?.activeProject
@@ -468,6 +522,7 @@ export function WorkbenchView({ ctx }: { readonly ctx: ClientContext }): React.R
             onKeyDown={event => { if (event.key === 'Enter') { void litSearch() } }}
           />
           <button className='srw-btn primary' disabled={litBusy} onClick={() => { void litSearch() }}>检索</button>
+          <button className='srw-btn' disabled={litBusy || litQuery.trim() === ''} onClick={() => { void litToAgent() }}>转给 Agent</button>
           <button className='srw-btn' disabled={litBusy || libEntries.length === 0} onClick={() => { void litBibtex() }}>导出 BibTeX</button>
         </div>
         {litNotice !== null ? <p className='srw-detail'>{litNotice}</p> : null}
