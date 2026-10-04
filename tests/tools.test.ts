@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as nodePath from 'node:path'
 import { readFileSync, existsSync } from 'node:fs'
-import { approvalDecision, callerFrom, srwProjectToolDef, SRW_TOOL_NAME } from '../src/tools.ts'
+import { approvalDecision, callerFrom, srwProjectToolDef, srwLiteratureToolDef, searchOutputFor, SRW_TOOL_NAME, SRW_LIT_TOOL_NAME } from '../src/tools.ts'
 import { stripFrontmatter, registerBundledSkills, type SrwSkillsService } from '../src/skills.ts'
 import { SrwService } from '../src/service.ts'
 
@@ -112,4 +112,84 @@ test('技能：清单与 SKILL.md 存在、frontmatter 可剥、注册器逐个�
   const dispose = registerBundledSkills(fake, root)
   assert.deepEqual(registered, manifest.skills.map(item => item.name))
   dispose()
+})
+
+/** 无损 JSON 断言：值树里不允许出现 undefined（宿主工具结果校验 lossless
+ * 往返——显式 `key: undefined` 会被 JSON.stringify 丢键而破坏往返）。 */
+function assertLossless(value: unknown, path = '$'): void {
+  if (value === undefined) throw new Error(`lossless violated: undefined at ${path}`)
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => assertLossless(item, `${path}[${index}]`))
+    return
+  }
+  if (typeof value === 'object' && value !== null) {
+    for (const [key, item] of Object.entries(value)) assertLossless(item, `${path}.${key}`)
+  }
+}
+
+test('tools：输出无损 JSON——arXiv 型候选（无 oaUrl）不再炸 lossless（回归门）', () => {
+  // 2026-10-04 桌面端实测：显式 key: undefined 使宿主报 value is not lossless JSON，
+  // arXiv 源从不设 oaUrl → search 100% 失败。修复后投影不得含 undefined 值。
+  const sparse = {
+    source: 'arxiv' as const,
+    identity: { arxivId: '2401.00001v2', title: 'Sparse Survey', year: 2024 },
+    authors: ['A'],
+    venue: 'arXiv',
+    abstract: 'abs',
+    // pdfUrl/oaUrl 均缺省（源没给）
+  }
+  const out = searchOutputFor([sparse, { ...sparse, pdfUrl: 'https://arxiv.org/pdf/x' }])
+  assertLossless(out)
+  const first = out.items[0] as Record<string, unknown>
+  const second = out.items[1] as Record<string, unknown>
+  assert.equal('pdfUrl' in first, false)
+  assert.equal('oaUrl' in first, false)
+  assert.equal(second.pdfUrl, 'https://arxiv.org/pdf/x')
+  // 往返等价（JSON 无损的最终判据）
+  assert.deepEqual(JSON.parse(JSON.stringify(out)), out)
+  // 深层 identity 也过门（含可选 doi/arxivId 缺省形态）
+  assertLossless({ identity: sparse.identity })
+})
+
+test('tools：全动作输出无损——离线 fake 下 search 报 OFFLINE、lib/import/bibtex 输出过门', async () => {
+  const { mkdtemp, rm } = await import('node:fs/promises')
+  const { tmpdir } = await import('node:os')
+  const root = await mkdtemp(join(tmpdir(), 'srw-lossless-'))
+  try {
+    const nodePath = await import('node:path')
+    const fsLike = {
+      resolve: (rel: string, opts?: { cwd?: string }) => ({ key: nodePath.resolve(opts?.cwd ?? process.cwd(), rel) }),
+      contains: (parent: { key: string }, child: { key: string }) => {
+        const p = nodePath.resolve(parent.key)
+        const c = nodePath.resolve(child.key)
+        return c === p || c.startsWith(`${p}/`)
+      },
+    }
+    const service = await SrwService.open({ fs: fsLike }, { offlineMode: true })
+    await service.setRoot(root)
+    const projectDef = srwProjectToolDef(service)
+    const litDef = srwLiteratureToolDef(service)
+    const run = (def: { execute: (args: unknown, exec: unknown) => Promise<unknown> }, args: unknown) =>
+      def.execute(args, { agent: { session: { id: 's1', header: { cwd: root } } } })
+    // 建项目 → 入库（本地写，offline 跳过撤稿核查）→ lib → bibtex，全部输出过无损门
+    const created = await run(projectDef, { action: 'create', slug: 'lossless', title: '无损' })
+    assertLossless(created)
+    const imported = await run(litDef, {
+      action: 'import', project: 'lossless',
+      items: [{ source: 'arxiv', identity: { arxivId: '2401.00001v2', title: 'Sparse Survey', year: 2024 }, authors: ['A'], venue: 'arXiv', abstract: 'abs' }],
+    })
+    assertLossless(imported)
+    const lib = await run(litDef, { action: 'lib', project: 'lossless' })
+    assertLossless(lib)
+    const bib = await run(litDef, { action: 'bibtex', project: 'lossless' })
+    assertLossless(bib)
+    // offline search 明确 OFFLINE（不炸 lossless）
+    const search = await run(litDef, { action: 'search', source: 'arxiv', query: 'x' }) as { ok: boolean; error?: { code: string; message: string; details: object } }
+    assert.equal(search.ok, false)
+    assert.equal(search.error?.code, 'OFFLINE')
+    assertLossless(search)
+    await service.dispose()
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
 })

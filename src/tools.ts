@@ -8,6 +8,7 @@
 
 import { ServiceError, type SrwService } from './service.ts'
 import type { ProjectMeta } from './core/schema.ts'
+import type { LitCandidate } from './literature/types.ts'
 
 export const SRW_TOOL_NAME = 'srw_project'
 export const SRW_LIT_TOOL_NAME = 'srw_literature'
@@ -192,6 +193,31 @@ export function srwProjectToolDef(service: SrwService): SrwToolDef {
 }
 
 
+/** search 动作的输出投影（纯函数，无损 JSON 单测面）。
+ * 无损 JSON 纪律：宿主对工具结果校验 lossless 往返——可选字段显式写
+ * `key: undefined` 会被 JSON.stringify 丢键、值因此非无损（2026-10-04
+ * 桌面端实测踩中：arXiv 源从不设 oaUrl → search 100% 失败）。可选字段
+ * 一律条件展开。 */
+export function searchOutputFor(items: readonly LitCandidate[]): {
+  readonly count: number
+  readonly hint: string
+  readonly items: readonly unknown[]
+} {
+  return {
+    count: items.length,
+    hint: '入库用 action=import，items 传这些条目原样；project 用目标项目 slug',
+    items: items.map(item => ({
+      source: item.source,
+      identity: item.identity,
+      authors: item.authors.slice(0, 6),
+      venue: item.venue,
+      abstract: item.abstract.slice(0, 300),
+      ...(item.pdfUrl !== undefined ? { pdfUrl: item.pdfUrl } : {}),
+      ...(item.oaUrl !== undefined ? { oaUrl: item.oaUrl } : {}),
+    })),
+  }
+}
+
 /** `srw_literature` 四动作工具定义（search/lib 豁免；import/pdf 需 ask）。 */
 export function srwLiteratureToolDef(service: SrwService): SrwToolDef {
   const lit = (): SrwService['literature'] => service.literature
@@ -229,22 +255,7 @@ export function srwLiteratureToolDef(service: SrwService): SrwToolDef {
               typeof record['query'] === 'string' ? record['query'] : '',
               limit,
             )
-            return {
-              ok: true,
-              value: {
-                count: items.length,
-                hint: '入库用 action=import，items 传这些条目原样；project 用目标项目 slug',
-                items: items.map(item => ({
-                  source: item.source,
-                  identity: item.identity,
-                  authors: item.authors.slice(0, 6),
-                  venue: item.venue,
-                  abstract: item.abstract.slice(0, 300),
-                  pdfUrl: item.pdfUrl,
-                  oaUrl: item.oaUrl,
-                })),
-              },
-            }
+            return { ok: true, value: searchOutputFor(items) }
           }
           case 'lib': {
             const entries = await lit().lib(String(record['project'] ?? ''))
