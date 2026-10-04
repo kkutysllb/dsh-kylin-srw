@@ -71,7 +71,7 @@ test('library：STALE 乐观并发拒绝 + 坏 JSON 抛 INVALID + 坏 slug 拒',
       (e: unknown) => (e as { code?: string }).code === 'STALE',
     )
     // 坏 slug
-    assert.throws(() => store.load('-bad'), (e: unknown) => (e as { code?: string }).code === 'INVALID')
+    await assert.rejects(() => store.load('-bad'), (e: unknown) => (e as { code?: string }).code === 'INVALID')
     // 坏 JSON → INVALID（不清空）
     const { writeFile, mkdir } = await import('node:fs/promises')
     await mkdir(join(root, 'broken', 'literature'), { recursive: true })
