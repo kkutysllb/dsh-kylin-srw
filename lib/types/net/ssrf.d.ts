@@ -27,7 +27,8 @@ export interface PinnedResponse {
     readonly stream: http.IncomingMessage;
 }
 /** 钉死连接：request 带 lookup 钩子直接回调已校验 IP（跳过 DNS 二次解析），
- * TLS SNI/Host 头仍用原 hostname。 */
+ * TLS SNI/Host 头仍用原 hostname。lookup 回调按 options.all 双形态响应
+ * （all:true 要地址对象数组——实测传单值形式得 "Invalid IP address: undefined"）。 */
 export declare function pinnedRequest(target: URL, validatedIp: string, options?: {
     readonly headers?: Record<string, string>;
     readonly signal?: AbortSignal;

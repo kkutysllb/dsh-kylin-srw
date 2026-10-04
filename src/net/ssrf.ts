@@ -114,7 +114,8 @@ export interface PinnedResponse {
 }
 
 /** 钉死连接：request 带 lookup 钩子直接回调已校验 IP（跳过 DNS 二次解析），
- * TLS SNI/Host 头仍用原 hostname。 */
+ * TLS SNI/Host 头仍用原 hostname。lookup 回调按 options.all 双形态响应
+ * （all:true 要地址对象数组——实测传单值形式得 "Invalid IP address: undefined"）。 */
 export function pinnedRequest(
   target: URL,
   validatedIp: string,
@@ -126,9 +127,13 @@ export function pinnedRequest(
       method: 'GET',
       headers: options.headers,
       signal: options.signal,
-      lookup: (_hostname, _options, callback) => {
+      lookup: (_hostname, lookupOptions, callback) => {
         const family = net.isIP(validatedIp) === 6 ? 6 : 4
-        callback(null, validatedIp, family)
+        if (typeof lookupOptions === 'object' && lookupOptions !== null && lookupOptions.all === true) {
+          callback(null, [{ address: validatedIp, family }])
+        } else {
+          callback(null, validatedIp, family)
+        }
       },
     })
     request.on('response', stream => {
