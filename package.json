@@ -64,7 +64,8 @@
     "check": "npm run typecheck && npm run test && npm run build && npm run smoke"
   },
   "dependencies": {
-    "pdfjs-dist": "^6.3.289"
+    "pdfjs-dist": "^6.3.289",
+    "zod": "^4.6.5"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "*",

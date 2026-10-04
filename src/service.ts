@@ -7,8 +7,10 @@
  */
 
 import { collectCaps, type CapRow } from './diag.ts'
-import { hostHome, type SrwFsLike } from './host.ts'
+import { hostHome, type SrwFsLike, assertInsideRoot } from './host.ts'
 import { WorkspaceStore } from './workspace/project.ts'
+import { readRootConfig, writeRootConfig } from './workspace/root.ts'
+import { openSrwIndex, type SrwIndexDomain, type SrwIndexGlobal } from './store.ts'
 export interface SrwConfig {
   /** 科研总根；空 = 首次由面板引导选择（M1）。 */
   readonly rootDir?: string
@@ -37,6 +39,9 @@ export interface SrwInfo {
 export class SrwService {
   /** storage 全局里的总根（Task 1.4 srw_index 写入；config 缺省时的回落源）。 */
   private storageRootDir: string | undefined
+  /** srw_index 域 handle（storageDomain 不可达时保持 undefined，功能降级：
+  * rootDir 仅来自 patch config、activeProject 不持久——见 open 的降级注释）。 */
+  private index: SrwIndexDomain | undefined
 
   private constructor(
     /** 宿主 ctx（软探测只读使用；领域模块不得经它绕过本服务）。 */
@@ -56,7 +61,26 @@ export class SrwService {
       ctx, config, Date.now(),
       new WorkspaceStore(() => service.currentRoot()),
     )
+    // srw_index 打开：失败降级不阻断插件激活（storage 是 M1 面板便捷面，
+    // 真相源在文件系统）；两通道 inject 矩阵已保证 storageDomain 存在，
+    // 这里 catch 的是 open 期的介质错误（坏记录/版本不符等）。
+    const storageDomain = (ctx as { storageDomain?: unknown }).storageDomain
+    if (storageDomain !== undefined) {
+      try {
+        await service.attachIndex(await openSrwIndex(storageDomain))
+      } catch (error: unknown) {
+        const logger = (ctx as { logger?: { warn(message: string): void } }).logger
+        logger?.warn?.(`dsh-kylin-srw: srw_index 打开失败，持久索引降级（${String(error)}）`)
+      }
+    }
     return service
+  }
+
+  /** 挂上域 handle 并把持久 rootDir 收编进内存判定（config 仍优先）。 */
+  private async attachIndex(index: SrwIndexDomain): Promise<void> {
+    this.index = index
+    const stored = index.global.get().rootDir
+    if (stored !== '') this.adoptRoot(stored)
   }
 
   /** 当前科研总根（未设置 = undefined）。单源判定：config 优先，storage 全局回落。 */
@@ -70,6 +94,41 @@ export class SrwService {
   /** Task 1.4：root.set 落定后的总根更新入口（进程内生效；持久化在 srw_index）。 */
   adoptRoot(rootDir: string): void {
     this.storageRootDir = rootDir
+  }
+
+  /** srw_index 全局快照（index 缺席时以内存判定兜底）。 */
+  indexGlobal(): SrwIndexGlobal {
+    if (this.index !== undefined) return this.index.global.get()
+    return { rootDir: this.currentRoot() ?? '', activeProject: '' }
+  }
+
+  /** root.set：路径自检（resolve→contains 自含 + 可写性经 root.json 落盘证明）
+  * → root.json（根内配置）→ srw_index 全局（「哪个根」的持久记忆）→ 内存收编。 */
+  async setRoot(path: string): Promise<SrwIndexGlobal> {
+    const fs = (this.ctx as { fs?: SrwFsLike }).fs
+    await assertInsideRoot(fs, path, path)
+    await writeRootConfig(path, {})
+    const next: SrwIndexGlobal = { ...this.indexGlobal(), rootDir: path }
+    if (this.index !== undefined) await this.index.global.set(next)
+    this.adoptRoot(path)
+    return next
+  }
+
+  /** project.open：元数据 + activeProject 持久 + projectCache 投影。 */
+  async openProject(slug: string): Promise<unknown> {
+    const meta = await this.workspace.open(slug)
+    const record = {
+      slug: meta.slug,
+      title: meta.title,
+      stage: meta.stage,
+      updatedAt: meta.updatedAt,
+    }
+    const next: SrwIndexGlobal = { ...this.indexGlobal(), activeProject: record.slug }
+    if (this.index !== undefined) {
+      await this.index.global.set(next)
+      await this.index.table('project_cache').put(record.slug, record)
+    }
+    return meta
   }
 
   /** 轻量探活（`diag.ping` 端点）。 */
@@ -152,6 +211,9 @@ export class SrwService {
   }
 
   async dispose(): Promise<void> {
-    // M0：无持有资源。领域模块进场后在此逆序释放。
+    // 域 handle 的关闭（caller owns the domain，见 storage-domain open 契约）。
+    const index = this.index
+    this.index = undefined
+    if (index !== undefined) await index.close()
   }
 }

@@ -7,6 +7,7 @@
  */
 import { type CapRow } from './diag.ts';
 import { WorkspaceStore } from './workspace/project.ts';
+import { type SrwIndexGlobal } from './store.ts';
 export interface SrwConfig {
     /** 科研总根；空 = 首次由面板引导选择（M1）。 */
     readonly rootDir?: string;
@@ -35,12 +36,24 @@ export declare class SrwService {
     readonly workspace: WorkspaceStore;
     /** storage 全局里的总根（Task 1.4 srw_index 写入；config 缺省时的回落源）。 */
     private storageRootDir;
+    /** srw_index 域 handle（storageDomain 不可达时保持 undefined，功能降级：
+    * rootDir 仅来自 patch config、activeProject 不持久——见 open 的降级注释）。 */
+    private index;
     private constructor();
     static open(ctx: unknown, rawConfig: SrwConfig): Promise<SrwService>;
+    /** 挂上域 handle 并把持久 rootDir 收编进内存判定（config 仍优先）。 */
+    private attachIndex;
     /** 当前科研总根（未设置 = undefined）。单源判定：config 优先，storage 全局回落。 */
     currentRoot(): string | undefined;
     /** Task 1.4：root.set 落定后的总根更新入口（进程内生效；持久化在 srw_index）。 */
     adoptRoot(rootDir: string): void;
+    /** srw_index 全局快照（index 缺席时以内存判定兜底）。 */
+    indexGlobal(): SrwIndexGlobal;
+    /** root.set：路径自检（resolve→contains 自含 + 可写性经 root.json 落盘证明）
+    * → root.json（根内配置）→ srw_index 全局（「哪个根」的持久记忆）→ 内存收编。 */
+    setRoot(path: string): Promise<SrwIndexGlobal>;
+    /** project.open：元数据 + activeProject 持久 + projectCache 投影。 */
+    openProject(slug: string): Promise<unknown>;
     /** 轻量探活（`diag.ping` 端点）。 */
     ping(): {
         readonly pong: true;
