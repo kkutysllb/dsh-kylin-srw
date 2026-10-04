@@ -74,7 +74,9 @@ export function WorkbenchView({ ctx }: { readonly ctx: ClientContext }): React.R
   const [formSlug, setFormSlug] = useState('')
   const [formTitle, setFormTitle] = useState('')
   const [busy, setBusy] = useState(false)
+  const [confirmingSlug, setConfirmingSlug] = useState<string | null>(null)
   const alive = useRef(true)
+  const confirmTimer = useRef<number | undefined>(undefined)
 
   useEffect(() => {
     alive.current = true
@@ -106,6 +108,9 @@ export function WorkbenchView({ ctx }: { readonly ctx: ClientContext }): React.R
       }
     }
     void poll()
+    // 项目列表首载：overview 只有计数，列表需单独 root.get（此前只在
+    // 增删后刷新——页面重载后列表空、计数非零的不一致已修）。
+    void refreshProjects()
     timer = window.setInterval(() => { void poll() }, 5000)
     const onVisible = (): void => { if (document.visibilityState === 'visible') void poll() }
     document.addEventListener('visibilitychange', onVisible)
@@ -113,7 +118,7 @@ export function WorkbenchView({ ctx }: { readonly ctx: ClientContext }): React.R
       if (timer !== undefined) window.clearInterval(timer)
       document.removeEventListener('visibilitychange', onVisible)
     }
-  }, [ctx])
+  }, [ctx, refreshProjects])
 
   /* 引擎工作区口径（S1 判据数据源）：快照读取，不订阅（轮询时顺带刷新）。 */
   useEffect(() => {
@@ -125,21 +130,10 @@ export function WorkbenchView({ ctx }: { readonly ctx: ClientContext }): React.R
     }
   }, [ctx, overview])
 
-  const chooseRoot = useCallback(async (): Promise<void> => {
-    const picker = ctx.uiWorkspace?.pickDirectory
-    if (picker === undefined) {
-      setError('uiWorkspace.pickDirectory 不可达（client 注入缺席）')
-      return
-    }
+  const applyRoot = useCallback(async (picked: string): Promise<void> => {
     try {
-      setBusy(true)
       setError(null)
       setNotice(null)
-      const picked = await picker.call(ctx.uiWorkspace)
-      if (picked === null || picked === '') {
-        setNotice('已取消选择')
-        return
-      }
       await rpc(ctx, 'root.set', { path: picked })
       const value = await rpc<OverviewLite>(ctx, 'overview')
       if (alive.current) {
@@ -153,6 +147,40 @@ export function WorkbenchView({ ctx }: { readonly ctx: ClientContext }): React.R
       if (alive.current) setBusy(false)
     }
   }, [ctx, refreshProjects])
+
+  /** 选根：native 对话框弹在宿主屏幕（用户已实测可用）；browse 后端（无头/
+   * SSH 启动）也走同一 pickDirectory，由宿主 auto 选择交互。8s 超时只是
+   * 护栏：解除 busy 并提示对话框在宿主屏幕等待（自动化/远程场景的诚实文案）。 */
+  const chooseRoot = useCallback(async (): Promise<void> => {
+    const picker = ctx.uiWorkspace?.pickDirectory
+    if (picker === undefined) {
+      setError('uiWorkspace.pickDirectory 不可达（client 注入缺席）')
+      return
+    }
+    setBusy(true)
+    setError(null)
+    setNotice(null)
+    let timedOut = false
+    const timer = window.setTimeout(() => {
+      timedOut = true
+      setBusy(false)
+      setNotice('目录框可能已弹出在宿主屏幕上等待选择；若未出现请重启宿主后再试。')
+    }, 8000)
+    try {
+      const picked = await picker.call(ctx.uiWorkspace)
+      if (timedOut) return // 迟到结果丢弃：提示已给出，避免双写
+      if (picked === null || picked === '') {
+        setNotice('已取消选择')
+        return
+      }
+      await applyRoot(picked)
+    } catch (cause) {
+      if (!timedOut && alive.current) setError(String(cause))
+    } finally {
+      window.clearTimeout(timer)
+      if (!timedOut && alive.current) setBusy(false)
+    }
+  }, [ctx, applyRoot])
 
   const createProject = useCallback(async (): Promise<void> => {
     const slug = formSlug.trim()
@@ -190,11 +218,17 @@ export function WorkbenchView({ ctx }: { readonly ctx: ClientContext }): React.R
     }
   }, [ctx])
 
+  /** 删除（可用性修复②）：面板内两步确认——webview 里 window.confirm 不可靠
+   * （可能被拦或恒 undefined），改「删除 → 确认删除？」按钮态，6s 不确认自动回退。 */
   const removeProject = useCallback(async (slug: string): Promise<void> => {
-    // M1 基础版：confirm 对话框二次确认（宿主内建 confirm 不可用时拒绝动作）
-    try {
-      if (window.confirm !== undefined && !window.confirm(`删除项目「${slug}」？目录及其全部内容将一并删除。`)) return
-    } catch { return }
+    if (confirmingSlug !== slug) {
+      setConfirmingSlug(slug)
+      if (confirmTimer.current !== undefined) window.clearTimeout(confirmTimer.current)
+      confirmTimer.current = window.setTimeout(() => { setConfirmingSlug(null) }, 6000)
+      return
+    }
+    if (confirmTimer.current !== undefined) window.clearTimeout(confirmTimer.current)
+    setConfirmingSlug(null)
     try {
       setBusy(true)
       setError(null)
@@ -205,7 +239,7 @@ export function WorkbenchView({ ctx }: { readonly ctx: ClientContext }): React.R
     } finally {
       if (alive.current) setBusy(false)
     }
-  }, [ctx, refreshProjects])
+  }, [ctx, refreshProjects, confirmingSlug])
 
   const activeStage = overview?.activeStage
   const rootDir = overview?.rootDir ?? ''
@@ -283,7 +317,13 @@ export function WorkbenchView({ ctx }: { readonly ctx: ClientContext }): React.R
                       ) : (
                         <button className='srw-btn' disabled={busy} onClick={() => { void openProject(project.slug) }}>打开</button>
                       )}
-                      <button className='srw-btn danger' disabled={busy} onClick={() => { void removeProject(project.slug) }}>删除</button>
+                      <button
+                        className={`srw-btn ${confirmingSlug === project.slug ? 'danger-confirm' : 'danger'}`}
+                        disabled={busy}
+                        onClick={() => { void removeProject(project.slug) }}
+                      >
+                        {confirmingSlug === project.slug ? '确认删除？（不可恢复）' : '删除'}
+                      </button>
                     </div>
                   </li>
                 ))}

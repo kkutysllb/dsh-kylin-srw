@@ -108,6 +108,7 @@ const CSS = `
 }
 .srw-stage.current { background: var(--srw-primary); color: var(--srw-primary-fg); }
 .srw-btn.danger:hover { border-color: var(--srw-error); color: var(--srw-error); }
+.srw-btn.danger-confirm { background: var(--srw-error); border-color: var(--srw-error); color: var(--srw-primary-fg); }
 .srw-btn.link {
   appearance: none; background: none; border: none; padding: 0;
   color: var(--srw-fg); font-size: 13px; font-weight: 600; cursor: pointer;

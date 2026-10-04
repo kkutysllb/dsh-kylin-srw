@@ -106,13 +106,22 @@ export function apply(ctx: ClientContext): void {
         const choose = async (): Promise<void> => {
           const picker = ctx.uiWorkspace?.pickDirectory
           if (picker === undefined) {
-            setError('uiWorkspace.pickDirectory 不可达')
+            setError('目录选择不可用：请到侧边栏「科研工作台」面板选择（面板内置目录浏览器）')
             return
           }
+          setBusy(true)
+          setError(null)
+          // web profile 的 pickDirectory 无 provider、Promise 永不 resolve（实测）：
+          // 8s 超时解除 busy 并指引用户去面板。
+          let timedOut = false
+          const timer = window.setTimeout(() => {
+            timedOut = true
+            setBusy(false)
+            setError('目录框可能已弹出在宿主屏幕上等待选择；若未出现请到面板重试。')
+          }, 8000)
           try {
-            setBusy(true)
-            setError(null)
             const picked = await picker.call(ctx.uiWorkspace)
+            if (timedOut) return
             if (picked === null || picked === '') return
             const rpc = ctx.connection?.rpc
             const call = rpc?.call
@@ -120,9 +129,10 @@ export function apply(ctx: ClientContext): void {
             await call.call(rpc, '/dsh-kylin-srw', 'root.set', { path: picked })
             setRootDir(picked)
           } catch (cause) {
-            setError(String(cause))
+            if (!timedOut) setError(String(cause))
           } finally {
-            setBusy(false)
+            window.clearTimeout(timer)
+            if (!timedOut) setBusy(false)
           }
         }
         return (

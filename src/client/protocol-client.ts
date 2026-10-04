@@ -80,7 +80,8 @@ export interface ConversationService {
   readonly input?: { for?(carrier: unknown): InputShell }
 }
 
-/** 目录选择（ui-workspace；宿主原生 picker，取消返回 null）。 */
+/** 目录选择（ui-workspace）：native 对话框弹在宿主屏幕（本机可用），
+ * browse 后端只在无头/SSH 启动时由 auto 挂载——两条路都走 pickDirectory。 */
 export interface UiWorkspaceService {
   pickDirectory?(): Promise<string | null>
 }
