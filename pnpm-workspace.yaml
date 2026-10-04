@@ -1,0 +1,11 @@
+# 本地插件包（单包，非 monorepo）。pnpm 设置：
+# - 不自动安装 peer：宿主运行时提供 @deepseek-ai/*，其传递依赖不在公共
+#   npm 上（auto-install 会 404）；类型经 src/types/dsh.d.ts 提供。
+# - esbuild 需要构建脚本（平台二进制安装）；
+# - 跳过 run 前依赖状态校验，避免 ignored-builds 警告阻断脚本。
+allowBuilds:
+  esbuild: true
+autoInstallPeers: false
+onlyBuiltDependencies:
+  - esbuild
+verifyDepsBeforeRun: false

@@ -1,1 +1,7 @@
+# 调研物料（tarball 解包与目录 JSON），不进版本库（0101 附录）
 .survey/
+
+node_modules/
+*.log
+.DS_Store
+tmp/

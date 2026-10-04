@@ -1,0 +1,10 @@
+# One installable bundle row mounts the Host service; the dsh.client half is
+# the Web 科研工作台（侧边栏菜单项 + main 主面板，M0 先落诊断视图）。
+- insert:
+    - id: dsh-kylin-srw
+      name: 'dsh-kylin-srw'
+      config:
+        # 科研总根；空 = 首次由面板引导选择（M1 接引擎原生目录选择器）。
+        rootDir: ''
+        # 离线模式：停用抓取/翻译/远端执行等外联动作，本地读写与编译不受影响。
+        offlineMode: false
