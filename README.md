@@ -21,6 +21,7 @@
 | [0102 技术架构](docs/01-tech/0102-技术架构.md) | 需求→能力→验收追溯矩阵；双通道契约（双键回落语义 / 零运行时导入 / 9 个可 require 模块）；领域模型与磁盘布局（**文件是真相源**）；**三把尖刀机制**（段落锚定双语精读产物 / 素材证明链 / 刊物分级 schema + D1–D3 深度档）；7 视图 UI 与**右栏硬约束**；两条调度车道（`ctx.schedule` 只投递，派发用 `agents.create`）；远程 GPU 三级复用链；安全红线；**20 条 ADR**；风险与 Phase 0；宿主能力面速查 |
 | [0201 实施计划](docs/02-plan/0201-实施计划.md) | 执行约定；M0–M8 里程碑（目标/任务/文件/验收/DoD/粗估）；M0 的 bite-sized 详细任务；`pnpm` 质量门与验证矩阵；7 个端到端验收场景；发布与分发链；风险登记；工时总表（75–114 人日）；**附二：宿主事实核对对计划的逐条影响**；**附三：M0 实测回改（8 条）** |
 | [0202 M1 详细计划](docs/02-plan/0202-M1-工作区与项目.md) | Task 1.0–1.7 bite-sized（注入面验证矩阵 / root.json + settings.section 转正 / workspace 模块 / srw_index v1 / R2 端点 / 工作台视图 / srw_project 工具）；M1 验收 7 断言；settings.register 走 V15 后置的决策记录 |
+| [0203 M2 详细计划](docs/02-plan/0203-M2-文献通路.md) | RateGate（域令牌桶+文件锁账本）/ arXiv·OpenAlex·Crossref 适配 / 三级身份去重 / library.json（STALE）/ PDF 获取（SSRF 三步+白名单）/ BibTeX / 撤稿检查 / 文献视图 + srw_literature 工具；验收 7 断言 |
 
 ## 定位（一句话）
 
