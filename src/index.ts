@@ -16,8 +16,10 @@ import { SrwService, type SrwConfig } from './service.ts'
 
 export const name = 'dsh-kylin-srw'
 
-/** M0 最小注入面：RPC 通道两件套。领域模块进场后按需扩名单（storageDomain/
- * workspaceRegistry/llm/schedule/agents/…）；扩名单前先过 E1/E2 冒烟。 */
+/** M0 注入面：RPC 通道两件套。领域模块进场后按需扩名单——**每个名字都必须
+ * 是「目标宿主编排保证存在」的服务**：E3 实测 inject 一个 profile 未挂载的
+ * 服务（schedule in web profile）会让插件永久 pending（面板不出现）；
+ * ctx.get 同样被栅栏拦。M3 接入 schedule 时必须带能力探测降级。 */
 export const inject = [
   'connection',
   'webServer',

@@ -8,7 +8,6 @@
 
 import { collectCaps, type CapRow } from './diag.ts'
 import { hostHome } from './host.ts'
-
 export interface SrwConfig {
   /** 科研总根；空 = 首次由面板引导选择（M1）。 */
   readonly rootDir?: string
@@ -63,6 +62,48 @@ export class SrwService {
   /** 宿主能力表（`diag.caps` 端点；E1/E2 与 V 系列核对的数据源）。 */
   caps(): readonly CapRow[] {
     return collectCaps(this.ctx)
+  }
+
+  /** 宿主 schedule 服务面（E3 边界试验专用；经 ctx.get 动态取，不进 inject
+   * 名单——避免缺名导致激活失败）。M3 正式接入时再按 ADR-8 定稿。 */
+  private schedule(): Record<string, (...args: unknown[]) => unknown> {
+    const schedule = (this.ctx as Record<string, unknown>)['schedule'] as Record<string, (...args: unknown[]) => unknown> | undefined
+    if (schedule === undefined) {
+      throw new ServiceError('NO_PROVIDER', '宿主 schedule 服务缺席（ctx.get 未取到；宿主或 profile 未挂载）')
+    }
+    return schedule
+  }
+
+  /** E3-A/B：创建提醒（恰一个 selector）。 */
+  async scheduleCreate(input: {
+    readonly sessionId: string
+    readonly title: string
+    readonly prompt: string
+    readonly afterSeconds?: number
+    readonly everySeconds?: number
+  }): Promise<unknown> {
+    const schedule = this.schedule()
+    const request: Record<string, unknown> = { title: input.title, prompt: input.prompt }
+    if (input.afterSeconds !== undefined) request['after_seconds'] = input.afterSeconds
+    if (input.everySeconds !== undefined) request['every_seconds'] = input.everySeconds
+    return await schedule['create']?.call(schedule, input.sessionId, request)
+  }
+
+  /** E3：列出某会话的 active 任务。 */
+  async scheduleList(sessionId: string): Promise<unknown> {
+    const schedule = this.schedule()
+    return await schedule['list']?.call(schedule, { sessionId })
+  }
+
+  /** E3：删除任务。 */
+  async scheduleDelete(sessionId: string, id: string): Promise<unknown> {
+    const schedule = this.schedule()
+    return await schedule['delete']?.call(schedule, { sessionId, id })
+  }
+
+  /** E3-C：读 schedule 存储落点（宿主 home 下 storages/schedule.json）。 */
+  scheduleStoragePath(): string {
+    return `${hostHome().home}/storages/schedule.json`
   }
 
   async dispose(): Promise<void> {

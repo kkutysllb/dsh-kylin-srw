@@ -36,6 +36,32 @@ function toErrorResult(error: unknown, aborted: boolean): RpcResult<never> {
   return fail('internal', error instanceof Error ? error.message : String(error))
 }
 
+/* ── 载荷校验（diag 端点最小集）── */
+
+function record(value: unknown): Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new ServiceError('INVALID', 'payload must be an object')
+  }
+  return value as Record<string, unknown>
+}
+
+function reqString(body: Record<string, unknown>, key: string): string {
+  const value = body[key]
+  if (typeof value !== 'string' || value === '' || value.length > 5000) {
+    throw new ServiceError('INVALID', `${key} must be a non-empty string (≤5000)`)
+  }
+  return value
+}
+
+function optNumber(body: Record<string, unknown>, key: string): number | undefined {
+  const value = body[key]
+  if (value === undefined) return undefined
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1 || value > 86_400) {
+    throw new ServiceError('INVALID', `${key} must be an integer 1..86400`)
+  }
+  return value
+}
+
 interface SrwWebServerLike {
   register(route: {
     kind: 'prefix'
@@ -174,6 +200,26 @@ export async function handleSrwRpc(
         return ok({ caps: service.caps(), info: service.info(SRW_VERSION) })
       case 'diag.echo':
         return ok({ echoed: payload })
+      case 'diag.schedule.create': {
+        const body = record(payload)
+        const afterSeconds = optNumber(body, 'afterSeconds')
+        const everySeconds = optNumber(body, 'everySeconds')
+        return ok(await service.scheduleCreate({
+          sessionId: reqString(body, 'sessionId'),
+          title: reqString(body, 'title'),
+          prompt: reqString(body, 'prompt'),
+          ...(afterSeconds === undefined ? {} : { afterSeconds }),
+          ...(everySeconds === undefined ? {} : { everySeconds }),
+        }))
+      }
+      case 'diag.schedule.list':
+        return ok(await service.scheduleList(reqString(record(payload), 'sessionId')))
+      case 'diag.schedule.delete': {
+        const body = record(payload)
+        return ok(await service.scheduleDelete(reqString(body, 'sessionId'), reqString(body, 'id')))
+      }
+      case 'diag.schedule.storage':
+        return ok({ path: service.scheduleStoragePath() })
       default:
         return fail('not-found', `unknown endpoint ${JSON.stringify(endpoint)}`)
     }

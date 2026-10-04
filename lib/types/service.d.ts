@@ -41,5 +41,22 @@ export declare class SrwService {
     info(version: string): SrwInfo;
     /** 宿主能力表（`diag.caps` 端点；E1/E2 与 V 系列核对的数据源）。 */
     caps(): readonly CapRow[];
+    /** 宿主 schedule 服务面（E3 边界试验专用；经 ctx.get 动态取，不进 inject
+     * 名单——避免缺名导致激活失败）。M3 正式接入时再按 ADR-8 定稿。 */
+    private schedule;
+    /** E3-A/B：创建提醒（恰一个 selector）。 */
+    scheduleCreate(input: {
+        readonly sessionId: string;
+        readonly title: string;
+        readonly prompt: string;
+        readonly afterSeconds?: number;
+        readonly everySeconds?: number;
+    }): Promise<unknown>;
+    /** E3：列出某会话的 active 任务。 */
+    scheduleList(sessionId: string): Promise<unknown>;
+    /** E3：删除任务。 */
+    scheduleDelete(sessionId: string, id: string): Promise<unknown>;
+    /** E3-C：读 schedule 存储落点（宿主 home 下 storages/schedule.json）。 */
+    scheduleStoragePath(): string;
     dispose(): Promise<void>;
 }
