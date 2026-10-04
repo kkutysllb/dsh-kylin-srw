@@ -86,16 +86,42 @@ async function main() {
       console.log(`✓ dsh plugin add 成功 ${dshLabel}`)
     } else if (refused) {
       // E2 实测事实（2026-10-04）：desktop profile 由 Electron 应用独占管理，
-      // CLI add 被拒 → 手改 profile package.json 记 link: 依赖（先备份）。
-      console.log(`⚠ profile ${dshProfile} 由 Electron 应用独占管理，CLI add 被拒 → 手改记账`)
+      // CLI 一律被拒（连 --help 都拒；报错文案建议的 install 同样跑不了）。
+      // 完整手改三件套（照 dsh-skills-stock 先例，三者缺一即「异常/无法解析」）：
+      // ① package.json dependencies 记 link:；② pnpm-lock.yaml importers 条目；
+      // ③ node_modules 符号链接。全部先备份。
+      console.log(`⚠ profile ${dshProfile} 由 Electron 应用独占管理，CLI add 被拒 → 手改三件套记账`)
+      const profileDir = join(homedir(), '.dsh', 'profiles', dshProfile)
       const handEdit = spawnSync('python3', ['-c', `
-import json, sys, shutil, time
-path = ${JSON.stringify(join(homedir(), '.dsh', 'profiles', dshProfile, 'package.json'))}
-shutil.copy(path, path + '.bak-srw-' + str(int(time.time())))
-with open(path) as f: d = json.load(f)
-d.setdefault('dependencies', {})['dsh-kylin-srw'] = ${JSON.stringify(linkPath)}
-with open(path, 'w') as f: json.dump(d, f, indent=2, ensure_ascii=False)
-print('✓ 已记账（含备份 .bak-srw-*）:', d['dependencies']['dsh-kylin-srw'])
+import json, shutil, time
+prof = ${JSON.stringify(profileDir)}
+link_abs = ${JSON.stringify(linkPath)}
+stamp = str(int(time.time()))
+# ① package.json
+pkg = prof + '/package.json'
+shutil.copy(pkg, pkg + '.bak-srw-' + stamp)
+with open(pkg) as f: d = json.load(f)
+d.setdefault('dependencies', {})['dsh-kylin-srw'] = link_abs
+with open(pkg, 'w') as f: json.dump(d, f, indent=2, ensure_ascii=False)
+# ② pnpm-lock.yaml（importers 条目；version 用相对 link 形态）
+lock = prof + '/pnpm-lock.yaml'
+shutil.copy(lock, lock + '.bak-srw-' + stamp)
+with open(lock) as f: text = f.read()
+if 'dsh-kylin-srw:' not in text:
+    entry = (
+        '      dsh-kylin-srw:\\n'
+        '        specifier: ' + link_abs + '\\n'
+        '        version: link:../../../kk_Projects/dsh-kylin-srw\\n'
+    )
+    anchor = '      dsh-skills-stock:'
+    assert anchor in text, 'lockfile anchor dsh-skills-stock not found; 手工插入'
+    with open(lock, 'w') as f: f.write(text.replace(anchor, entry + anchor, 1))
+# ③ node_modules 符号链接（与 dsh-skills-stock 同款相对路径）
+import os
+ln = prof + '/node_modules/dsh-kylin-srw'
+if not os.path.islink(ln) and not os.path.exists(ln):
+    os.symlink('../../../../kk_Projects/dsh-kylin-srw', ln)
+print('✓ 三件套完成（备份后缀 .bak-srw-' + stamp + '）')
 `], { encoding: 'utf8', shell: false })
       console.log(handEdit.stdout ?? handEdit.stderr)
       if (handEdit.status !== 0) failures += 1

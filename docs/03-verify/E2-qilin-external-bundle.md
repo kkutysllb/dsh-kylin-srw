@@ -30,7 +30,15 @@
    - `--port`/`--no-open` 是 web **应用**参数，需放 `--` 之后：`qilin web --no-open --port 3091` 可用，但混用 launcher 参数时写 `qilin --profile web --patch <yml> -- --no-open --port 3091`。
    - `--patch` 是 **launcher** 参数（`--patch <yml>` 叠加 patch 层），web 应用自身不认。
    - 验证实例关闭账号门的 overlay：`- id: accounts / config: { enabled: false }`（与 `apps/cli/tests/web-auth.e2e.ts` 的做法一致）；打印 URL 的 `token` 只做**设备信任交换**（303 + 设备 cookie），账号门开着时仍需登录。
-4. **desktop profile 由 Electron 应用独占管理**（DSH 侧）：`dsh plugin --profile desktop add …` 被拒 `profile "desktop" is managed exclusively by the Electron application` → 手改 `~/.dsh/profiles/desktop/package.json` 记 `link:` 依赖（已备份 `.bak-srw-*`；该 profile 本有 `dsh-skills-stock` 的 link 先例）。**待用户完全重启桌面端验证装载**。
+4. **desktop profile 由 Electron 应用独占管理**（DSH 侧）：
+   - `dsh plugin --profile desktop …` 一律被拒（`add`/`install`/连 `--help` 都拒；首启报错文案建议的 `dsh plugin --profile desktop install` **实际跑不了**——文案与权限矛盾，勿信）。
+   - 首次只手改 package.json 的结果是启动后插件标**异常**：`cannot resolve profile bundle "dsh-kylin-srw" from the dsh installation or ~/.dsh/profiles/desktop`（用户桌面端实测截图，2026-10-04）。
+   - **正确手改三件套**（缺一不可，照 `dsh-skills-stock` 先例，全部先备份 `.bak-srw-*`）：
+     ① `package.json` → `dependencies` 记 `"dsh-kylin-srw": "link:<abs>"`；
+     ② `pnpm-lock.yaml` → `importers..dependencies` 插条目（`specifier` = 绝对 link，`version` = `link:../../../kk_Projects/dsh-kylin-srw` 相对形态）；
+     ③ `node_modules/dsh-kylin-srw` → 符号链接 `../../../../kk_Projects/dsh-kylin-srw`。
+   - 三件套已于 2026-10-04 18:11 补齐；**待用户完全重启桌面端复验**（预期：异常消失、侧栏出现「科研工作台」）。
+   - `dev-install.mjs` 的 fallback 已固化为该三件套。
 
 ## 待补（不阻塞 M1 开工）
 
