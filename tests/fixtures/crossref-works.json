@@ -1,0 +1,25 @@
+{
+  "status": "ok",
+  "message-type": "work-list",
+  "message": {
+    "items": [
+      {
+        "DOI": "10.1145/3568000.X",
+        "title": ["Attention Is Revisited, Again: A Survey"],
+        "container-title": ["ACM Journal of Surveys"],
+        "type": "journal-article",
+        "issued": { "date-parts": [[2023, 11, 2]] },
+        "author": [
+          { "given": "Dana", "family": "Delta" },
+          { "name": "Evan Epsilon Org" }
+        ],
+        "abstract": "<jats:p>Crossref abstract with JATS tags.</jats:p>"
+      },
+      {
+        "DOI": "10.fake/0000",
+        "title": ["Missing Authors Work"],
+        "issued": { "date-parts": [[2021]] }
+      }
+    ]
+  }
+}

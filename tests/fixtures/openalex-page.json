@@ -1,0 +1,35 @@
+{
+  "meta": {
+    "count": 3,
+    "next_cursor": "IzAzOQ=="
+  },
+  "results": [
+    {
+      "id": "https://openalex.org/W123",
+      "doi": "https://doi.org/10.1145/3568000.X",
+      "display_name": "Attention Is Revisited, Again",
+      "publication_year": 2023,
+      "publication_date": "2023-11-02",
+      "cited_by_count": 42,
+      "authorships": [
+        { "author": { "display_name": "Dana Delta" } },
+        { "author": { "display_name": "Evan Epsilon" } },
+        { "author": {} }
+      ],
+      "primary_location": {
+        "source": { "display_name": "Journal of Surveys" }
+      },
+      "open_access": { "is_oa": true, "oa_url": "https://example.org/oa/attention" },
+      "best_oa_location": { "pdf_url": "https://example.org/oa/attention.pdf" }
+    },
+    {
+      "id": "https://openalex.org/W456",
+      "display_name": "No DOI Anywhere",
+      "publication_year": 2022,
+      "authorships": [],
+      "primary_location": { "source": null },
+      "open_access": {},
+      "best_oa_location": null
+    }
+  ]
+}
