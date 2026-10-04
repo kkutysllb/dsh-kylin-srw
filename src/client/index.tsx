@@ -1,15 +1,17 @@
 /** Client 入口：侧边栏菜单项（`sidebar.panellist`）+ 独立主面板（`main`
- * keyed 槽）+ E1 验证用的 `settings.section` 区块。M0 面板 = 诊断视图。
+ * keyed 槽）+ 设置区块（`settings.section`，M1 转正式）。M1 面板 = 工作台
+ * 视图（项目头/列表/流水线/诊断折叠），诊断视图保留为折叠卡。
  * bundle 经 window.__ModuleLoader__.load 装载（CJS 模块表契约）。
  *
  * inject 名单纪律（vibe 0.2.0 实测：缺名会激活失败）：前 10 个是同族已验证
- * 名单；后 4 个是 **E1 专用临时注入**（2026-10-04）——主区被占时右栏/预览/
- * 会话输入的真实行为必须注入才能逐项实测，E1 收口后按结论保留或撤。
+ * 名单；后 4 个是 E1 收口后**保留**的注入（右栏/预览/会话输入/uiSession
+ * —— M2+ 文献预览与会话联动都要用，行为已在 E1 逐项实测）。
  */
 
+import { useEffect, useState } from 'react'
 import type { ClientContext } from './protocol-client.ts'
 import { installStyles } from './styles.ts'
-import { DiagView } from './view.tsx'
+import { WorkbenchView } from './workbench.tsx'
 
 export const name = 'dsh-kylin-srw'
 
@@ -65,7 +67,7 @@ export function apply(ctx: ClientContext): void {
           key: PANEL_ID,
           locale: NS,
         }, function SrwMount(): React.ReactElement {
-          return <DiagView ctx={ctx} />
+          return <WorkbenchView ctx={ctx} />
         })
         return () => { disposePanel(); disposeIcon() }
       })
@@ -73,23 +75,68 @@ export function apply(ctx: ClientContext): void {
       console.warn('[dsh-kylin-srw] sidebar/main slot registration skipped:', error)
     }
 
-    // E1 第 10 项载体：`settings.section` 是 body 级 portal 模态——主区被占
-    // 时从外壳打开设置页，能看到本区块即证实 0102 §9.1 的预期。验证期注册，
-    // M1 转正式设置页（ctx.settings.register + 自绘 section）。
+    // 设置区块（M1 转正，E1 验证结论留档 docs/03-verify/E1）：`settings.section`
+    // 是 body 级 portal 模态——主区被占也能打开。内容 = 总根摘要 + 选择按钮
+    // （与面板同一条 root.set 通路）。
     try {
       slots.inject('settings.section', () => slots.register({
         name: 'settings.section',
-        id: 'srw-e1',
-        order: 9999,
-        label: '科研工作台（E1 验证）',
-      }, function SrwE1SettingsSection(): React.ReactElement {
+        id: 'srw-settings',
+        order: 900,
+        label: '科研工作台',
+      }, function SrwSettingsSection(): React.ReactElement {
+        const [rootDir, setRootDir] = useState<string>('')
+        const [busy, setBusy] = useState(false)
+        const [error, setError] = useState<string | null>(null)
+        useEffect(() => {
+          let alive = true
+          const load = async (): Promise<void> => {
+            try {
+              const rpc = ctx.connection?.rpc
+              const call = rpc?.call
+              if (call === undefined) return
+              const raw = await call.call(rpc, '/dsh-kylin-srw', 'overview')
+              const envelope = raw as { ok?: boolean; value?: { rootDir?: string } }
+              if (alive && envelope?.ok === true) setRootDir(envelope.value?.rootDir ?? '')
+            } catch { /* 设置页静默重试 */ }
+          }
+          void load()
+          return () => { alive = false }
+        }, [])
+        const choose = async (): Promise<void> => {
+          const picker = ctx.uiWorkspace?.pickDirectory
+          if (picker === undefined) {
+            setError('uiWorkspace.pickDirectory 不可达')
+            return
+          }
+          try {
+            setBusy(true)
+            setError(null)
+            const picked = await picker.call(ctx.uiWorkspace)
+            if (picked === null || picked === '') return
+            const rpc = ctx.connection?.rpc
+            const call = rpc?.call
+            if (call === undefined) throw new Error('connection.rpc.call 不可用')
+            await call.call(rpc, '/dsh-kylin-srw', 'root.set', { path: picked })
+            setRootDir(picked)
+          } catch (cause) {
+            setError(String(cause))
+          } finally {
+            setBusy(false)
+          }
+        }
         return (
           <div style={{ padding: '12px 4px', fontSize: 13, lineHeight: 1.7 }}>
-            <strong>科研工作台 · E1 验证区块</strong>
-            <p style={{ margin: '6px 0 0' }}>
-              当前主区被「科研工作台」面板占用。能看到本区块 = 证实
-              settings.section 是 body 级 portal 模态（主区被占也能打开），
-              0102 §9.1 第 10 项通过。
+            <strong>科研工作台</strong>
+            <p style={{ margin: '6px 0' }}>
+              科研总根：{rootDir === '' ? '未设置' : rootDir}
+            </p>
+            <button className='srw-btn' disabled={busy} onClick={() => { void choose() }}>
+              {rootDir === '' ? '选择科研总根' : '更换科研总根'}
+            </button>
+            {error !== null ? <p style={{ margin: '6px 0 0', color: 'var(--srw-error, #c0392b)' }}>{error}</p> : null}
+            <p style={{ margin: '10px 0 0', opacity: 0.75 }}>
+              项目管理在侧边栏「科研工作台」面板中进行。
             </p>
           </div>
         )

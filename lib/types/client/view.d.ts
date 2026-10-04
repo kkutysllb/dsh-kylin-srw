@@ -11,6 +11,7 @@
  * - `uiSession.adapter.current.getSnapshot().key`（ui-session index.ts:299）
  */
 import type { ClientContext } from './protocol-client.ts';
-export declare function DiagView({ ctx }: {
+export declare function DiagView({ ctx, embedded }: {
     readonly ctx: ClientContext;
+    readonly embedded?: boolean;
 }): React.ReactElement;

@@ -86,7 +86,7 @@ function fmt(value: unknown, max = 220): string {
 
 type AnyFn = (...args: unknown[]) => unknown
 
-export function DiagView({ ctx }: { readonly ctx: ClientContext }): React.ReactElement {
+export function DiagView({ ctx, embedded = false }: { readonly ctx: ClientContext; readonly embedded?: boolean }): React.ReactElement {
   const [hostCaps, setHostCaps] = useState<readonly CapsRow[] | null>(null)
   const [info, setInfo] = useState<Record<string, unknown> | null>(null)
   const [rpcError, setRpcError] = useState<string | null>(null)
@@ -289,13 +289,17 @@ export function DiagView({ ctx }: { readonly ctx: ClientContext }): React.ReactE
 
   return (
     <div className='srw-panel'>
-      <h1 className='srw-h1'>科研工作台 · M0 诊断</h1>
-      <p className='srw-sub'>
-        {info === null
-          ? '宿主信息加载中…'
-          : `v${String(info['version'] ?? '?')} · 通道 ${String((info['home'] as Record<string, unknown> | undefined)?.['channel'] ?? '?')} · home ${String((info['home'] as Record<string, unknown> | undefined)?.['home'] ?? '') === '' ? '(未判定)' : String((info['home'] as Record<string, unknown>)['home'])} · 离线模式 ${info['offlineMode'] === true ? '开' : '关'}`}
-        {rpcError !== null ? <span style={{ color: 'var(--srw-error)' }}> · RPC：{rpcError}</span> : null}
-      </p>
+      {embedded ? null : (
+        <>
+          <h1 className='srw-h1'>科研工作台 · M0 诊断</h1>
+          <p className='srw-sub'>
+            {info === null
+              ? '宿主信息加载中…'
+              : `v${String(info['version'] ?? '?')} · 通道 ${String((info['home'] as Record<string, unknown> | undefined)?.['channel'] ?? '?')} · home ${String((info['home'] as Record<string, unknown> | undefined)?.['home'] ?? '') === '' ? '(未判定)' : String((info['home'] as Record<string, unknown>)['home'])} · 离线模式 ${info['offlineMode'] === true ? '开' : '关'}`}
+            {rpcError !== null ? <span style={{ color: 'var(--srw-error)' }}> · RPC：{rpcError}</span> : null}
+          </p>
+        </>
+      )}
 
       <div className='srw-card'>
         <h2>宿主能力（RPC diag.caps）</h2>

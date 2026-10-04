@@ -81,4 +81,35 @@ const CSS = `
   border: 1px solid var(--srw-border); border-radius: 8px; background: var(--srw-layer);
   color: var(--srw-fg); padding: 4px 8px; font-size: 12px; width: 260px;
 }
+.srw-form { align-items: center; }
+.srw-error { color: var(--srw-error); font-size: 12px; margin: 6px 0; word-break: break-all; }
+.srw-projects { list-style: none; margin: 8px 0 0; padding: 0; }
+.srw-project {
+  border: 1px solid var(--srw-border); border-radius: 10px;
+  padding: 10px 12px; margin-bottom: 8px;
+}
+.srw-project.active { border-color: var(--srw-primary); }
+.srw-project-main { display: flex; align-items: center; gap: 8px; }
+.srw-project-title { font-weight: 600; }
+.srw-project-meta { display: flex; gap: 6px; color: var(--srw-fg-muted); font-size: 11px; margin: 2px 0 4px; }
+.srw-badge {
+  display: inline-block; border-radius: 999px; padding: 1px 10px;
+  background: var(--srw-fill); color: var(--srw-fg-secondary); font-size: 11px;
+}
+.srw-pipeline { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.srw-stage {
+  border-radius: 999px; padding: 2px 12px; font-size: 12px;
+  background: var(--srw-fill); color: var(--srw-fg-muted);
+  position: relative;
+}
+.srw-stage:not(:last-child)::after {
+  content: '→'; position: absolute; right: -10px; top: 50%;
+  transform: translateY(-50%); color: var(--srw-fg-muted); font-size: 11px;
+}
+.srw-stage.current { background: var(--srw-primary); color: var(--srw-primary-fg); }
+.srw-btn.danger:hover { border-color: var(--srw-error); color: var(--srw-error); }
+.srw-btn.link {
+  appearance: none; background: none; border: none; padding: 0;
+  color: var(--srw-fg); font-size: 13px; font-weight: 600; cursor: pointer;
+}
 `

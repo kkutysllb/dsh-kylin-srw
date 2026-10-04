@@ -80,13 +80,33 @@ export interface ConversationService {
   readonly input?: { for?(carrier: unknown): InputShell }
 }
 
+/** 目录选择（ui-workspace；宿主原生 picker，取消返回 null）。 */
+export interface UiWorkspaceService {
+  pickDirectory?(): Promise<string | null>
+}
+
+/** 引擎工作区快照（workspace-controller）：S1 口径核对数据源。 */
+export interface WorkspacesService {
+  readonly list?: {
+    getSnapshot?(): {
+      readonly items?: readonly {
+        readonly workspaceId?: string
+        readonly path?: string
+        readonly title?: string
+      }[]
+      readonly state?: string
+      readonly phase?: string
+    }
+  }
+}
+
 export interface ClientContext {
   readonly slots?: SlotsService
   readonly connection?: ConnectionService
   readonly locale?: LocaleService
   readonly sessions?: SessionsService
-  readonly uiWorkspace?: Record<string, unknown>
-  readonly workspaces?: Record<string, unknown>
+  readonly uiWorkspace?: UiWorkspaceService & Record<string, unknown>
+  readonly workspaces?: WorkspacesService & Record<string, unknown>
   readonly remote?: Record<string, unknown>
   readonly 'remote.session'?: Record<string, unknown>
   readonly modelDirectories?: Record<string, unknown>
