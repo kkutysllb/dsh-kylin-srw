@@ -6,6 +6,7 @@ import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import {
   arxivIdFromUrl,
+  arxivQueryField,
   chunkIds,
   fetchByIdsUrl,
   forceHttps,
@@ -55,11 +56,17 @@ test('arxiv：id 提取与 https 强制', () => {
 
 test('arxiv：URL 构造——all: 前缀、字段透传、limit 钳制、id_list 分片', () => {
   const s1 = searchArxivUrl('electron microscopy', 20)
-  assert.equal(s1.searchParams.get('search_query'), 'all:electron microscopy')
+  assert.equal(s1.searchParams.get('search_query'), 'all:"electron microscopy"')
   assert.equal(s1.searchParams.get('max_results'), '20')
-  // 用户自带字段前缀透传
-  const s2 = searchArxivUrl('ti:transformer survey', 5)
-  assert.equal(s2.searchParams.get('search_query'), 'ti:transformer survey')
+  // 字段前缀 + 空格短语 → 整体加引号（裸空格在 arXiv 返回 0 条——真网实测）
+  const s2 = searchArxivUrl('ti:attention is all you need', 5)
+  assert.equal(s2.searchParams.get('search_query'), 'ti:"attention is all you need"')
+  // AND 连接词保留：逐子句加引号
+  const s3 = searchArxivUrl('ti:electron AND au:hase', 5)
+  assert.equal(s3.searchParams.get('search_query'), 'ti:"electron" AND au:"hase"')
+  // 已带引号原样
+  const s4 = searchArxivUrl('ti:"exact phrase"', 5)
+  assert.equal(s4.searchParams.get('search_query'), 'ti:"exact phrase"')
   // limit 钳制
   assert.equal(searchArxivUrl('x', 999).searchParams.get('max_results'), '200')
   assert.equal(searchArxivUrl('x', 0).searchParams.get('max_results'), '1')

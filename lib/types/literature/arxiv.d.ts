@@ -15,8 +15,13 @@ export declare function forceHttps(url: string): string;
 export declare function arxivIdFromUrl(idUrl: string): string;
 /** 解析 Atom feed 的全部 entry（feed 头部忽略；无 entry 返回空数组）。 */
 export declare function parseArxivAtom(xml: string): LitCandidate[];
-/** 检索 URL：query 统一挂 all: 字段（用户已带 `ti:`/`au:` 前缀则透传原样）。 */
+/** 检索 URL：无字段前缀挂 all:；**带前缀的短语整体加引号**——arXiv 对
+ * `ti:attention is all you need` 这类裸空格串返回 0 条（真网实测 2026-10-04），
+ * 正确形态是 `ti:"..."`。AND/OR 连接词保留裸露。 */
 export declare function searchArxivUrl(query: string, limit: number): URL;
+/** 构造 arXiv search_query：字段前缀后的短语加引号；AND/OR/ANDNOT 连接词
+ * 按子句逐段处理。 */
+export declare function arxivQueryField(trimmed: string): string;
 /** id_list 批量 URL：≤100/批由调用方分片（本函数只负责拼）。 */
 export declare function fetchByIdsUrl(ids: readonly string[]): URL;
 /** id_list 分片。 */

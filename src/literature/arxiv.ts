@@ -111,15 +111,34 @@ export function parseArxivAtom(xml: string): LitCandidate[] {
   return candidates
 }
 
-/** 检索 URL：query 统一挂 all: 字段（用户已带 `ti:`/`au:` 前缀则透传原样）。 */
+/** 检索 URL：无字段前缀挂 all:；**带前缀的短语整体加引号**——arXiv 对
+ * `ti:attention is all you need` 这类裸空格串返回 0 条（真网实测 2026-10-04），
+ * 正确形态是 `ti:"..."`。AND/OR 连接词保留裸露。 */
 export function searchArxivUrl(query: string, limit: number): URL {
   const trimmed = query.trim()
   if (trimmed === '') throw new ServiceError('INVALID', 'arXiv 检索词不能为空')
-  const fieldQuery = /^(all|ti|au|abs|cat|id):/i.test(trimmed) ? trimmed : `all:${trimmed}`
+  const fieldQuery = arxivQueryField(trimmed)
   const url = new URL(ARXIV_API)
   url.searchParams.set('search_query', fieldQuery)
   url.searchParams.set('max_results', String(Math.min(200, Math.max(1, Math.floor(limit)))))
   return url
+}
+
+/** 构造 arXiv search_query：字段前缀后的短语加引号；AND/OR/ANDNOT 连接词
+ * 按子句逐段处理。 */
+export function arxivQueryField(trimmed: string): string {
+  const clauses = trimmed.split(/\s+(AND|OR|ANDNOT)\s+/i)
+  return clauses.map((clause) => {
+    if (clause === 'AND' || clause === 'OR' || clause === 'ANDNOT') return clause
+    const match = clause.match(/^(all|ti|au|abs|cat|id):\s*(.*)$/i)
+    if (match === null) return `all:"${clause.trim()}"`
+    const prefix = match[1] ?? 'all'
+    const rest = (match[2] ?? '').trim()
+    if (rest === '') return `${prefix}:"*"`
+    // 已带引号则原样
+    if (rest.startsWith('"') && rest.endsWith('"')) return `${prefix}:${rest}`
+    return `${prefix}:"${rest}"`
+  }).join(' ')
 }
 
 /** id_list 批量 URL：≤100/批由调用方分片（本函数只负责拼）。 */

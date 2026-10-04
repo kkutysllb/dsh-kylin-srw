@@ -281,10 +281,11 @@ export function WorkbenchView({ ctx }: { readonly ctx: ClientContext }): React.R
       setLitBusy(true)
       setLitNotice(null)
       setError(null)
-      const value = await rpc<{ items?: readonly LitCandidateLite[] }>(ctx, 'literature.search', { source: litSource, query, limit: 15 })
+      // literature.search 返回裸数组（候选列表）；此前误读 value.items 恒 undefined
+      const items = await rpc<readonly LitCandidateLite[]>(ctx, 'literature.search', { source: litSource, query, limit: 15 })
       if (alive.current) {
-        setLitResults(value.items ?? [])
-        setLitNotice(`检索到 ${value.items?.length ?? 0} 条（${litSource}）`)
+        setLitResults(items)
+        setLitNotice(`检索到 ${items.length} 条（${litSource}）`)
       }
     } catch (cause) {
       if (alive.current) setError(String(cause))
