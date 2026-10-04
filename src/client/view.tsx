@@ -251,8 +251,8 @@ export function DiagView({ ctx }: { readonly ctx: ClientContext }): React.ReactE
   /* ── §9.3：当前会话唯一权威 ── */
   const probeUiSession = useCallback((): void => {
     try {
-      const snapshot = ctx.uiSession?.adapter?.current?.getSnapshot?.()
-      pushLog(snapshot?.key !== undefined ? 'ok' : 'bad', `uiSession.adapter.current = ${fmt(snapshot)}（切会话后重按，验证实时性）`)
+      const key = ctx.uiSession?.adapter?.current?.getSnapshot?.().key
+      pushLog(key !== undefined ? 'ok' : 'bad', `uiSession.adapter.current.key = ${key === undefined ? '(undefined)' : JSON.stringify(key)}（切会话后重按，验证实时性）`)
     } catch (error: unknown) {
       pushLog('bad', `uiSession 探测抛错：${String(error)}`)
     }

@@ -10,24 +10,22 @@
 | # | 项（0201 Task 0.6 Step 2 编号） | 期望（0102 源码结论） | 实测 |
 |---|---|---|---|
 | 1 | 面板激活时 `layout.panelInfo.activePanelId` | `'srw'`（非 null） | ✅ **双通道复现**：麒麟 web 18:05 + DSH 桌面端 18:13 均 `{"activePanelId":"srw"}` |
+| 2 | 主区被占时 `sidebarRight.openResource(address)` | **抛** `no session surface is mounted` | ✅ **18:26 文案逐字一致**：`Error: sidebarRight: no session surface is mounted`（E1 专用注入版实测） |
+| 5 | 主区被占时 `documentPreviews.register` | 可注册（容器只在右栏，可见性另测） | ✅ **API 面通过**（注册成功 + 15s 自动撤销；可见性需真实文档，留 M1 与 PDF 精读一起测） |
 | 8 | RPC 通道往返（宿主服务可达性） | `webServer.register` 直连路径可用 | ✅ 双通道 `diag.caps OK（27 行）`，`connection`/`webServer`/`reflect` 绿 |
-| — | 客户端 10 服务注入 | vibe 同款名单双通道有效 | ✅ 麒麟 10/10 + DSH 桌面端 10/10 |
+| — | 客户端注入名单 | 已验证 10 + E1 临时 4 | ✅ **14/14 注入成功、激活无失败**（`sidebarRight`/`documentPreviews`/`uiSession`/`conversation` 四名全部可注入） |
 | — | 未注入服务的访问形态 | （源码未明说） | ✅ 双通道一致：**抛错** `cannot get property "X" without inject` → 详录 [E2](E2-qilin-external-bundle.md) 新事实 1 |
 
-**判定**：0102 ADR-10 的前提成立——主区 keyed 面板激活后 `activePanelId !== null`，按源码推论此时右栏绑定会解绑（`show(undefined)`）。主区方案可用，面板盒模型、样式、滚动在实机上表现正常（截图）。
+**判定**：0102 §9.1 容器决策（ADR-10）的两个关键前提全部实证——主区 keyed 面板可用，右栏写路径在主区被占时**响亮抛错**（不是静默）。产品的落地纪律随之定稿：**右栏相关 API 调用必须 try/catch + 面板置灰说明**，绝不裸调。
 
-## 待实测（面板按钮即载体，逐条点完即收口）
+## 待实测（三项，都需要一次用户操作）
 
 | # | 操作 | 期望 |
 |---|---|---|
-| 2 | 点「试开文档查看器」 | 抛 `sidebarRight: no session surface is mounted`（响亮失败）——当前显示「未注入」是因 inject 名单未含 `sidebarRight`，**E1 收口时需临时把 `sidebarRight` 加进 `src/client/index.ts` inject 名单复测** |
-| 3 | 点「试延迟打开」（填 sessionId） | 不抛但只写不画；回对话页 tab 出现 |
-| 4 | 主栏切回对话，右栏是否恢复 | 恢复 |
-| 5 | `documentPreviews.register` 后回对话页可见 | 同上 |
-| 6 | 「送草稿到会话」（填 sessionId） | setDraft+submit 落正确会话；两条路径（retain+binding / retainAgentScope+scope）哪条可用 |
-| 7 | 未 retain 直接 `for(actx)` 的错误文案 | `requires a retained Session scope` |
-| 9 | 盒模型：窄窗口下 `height:100% + overflow-y` 是否自滚 | 自滚（截图初判正常，待窄窗口确认） |
-| 10 | `settings.section` 主区被占时能否打开（portal 模态） | 能 |
+| 3 | 填 sessionId → 「试延迟打开」→ 切回对话页 | `openResourceIn` 不抛；tab 在对话页出现 |
+| 6/7 | 开会话 → 填 sessionId → 「送草稿到会话」 | 路径 A（retain+binding+conversation.input.for）落草稿到正确会话、不串台 |
+| 10 | 面板占主区时从外壳打开设置页 | 能打开且看到「科研工作台（E1 验证）」区块（portal 模态） |
+| §9.3 | 「uiSession 探测」→ 切会话 → 再按 | key 实时跟随 |
 
 ## 已发现的产品侧待办（不阻塞，回 M1/M0 收口处理）
 
