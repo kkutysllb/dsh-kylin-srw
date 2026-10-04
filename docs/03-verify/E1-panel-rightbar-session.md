@@ -1,39 +1,35 @@
-# E1 · 主区面板 × 右栏 × 会话（阶段记录）
+# E1 · 主区面板 × 右栏 × 会话（终版，全部收口）
 
-- 日期：2026-10-04
-- 环境：QiLin 3.0.10 web profile（`--port 3091`，accounts 门关闭的验证实例）、`dsh-kylin-srw@0.0.1`（link:）
-- 状态：**第 1、8 项已定论（面板激活与 RPC 通路）**；右栏三项与设置页待用户点按钮补录
-- 证据：用户本人操作截图（2026-10-04 18:04–18:05）
+- 日期：2026-10-04（18:04–18:40）
+- 环境：QiLin 3.0.10 web profile（`--port 3091`，accounts 门关闭的验证实例）、`dsh-kylin-srw@0.0.1`（link:）、E1 专用注入 build（`c203530`）
+- 状态：**✅ 全部判据完成**；DSH 桌面端复跑了第 1/8 项与注入矩阵（18:12–18:13），其余项在麒麟侧定论（两通道宿主面同构）
+- 证据：用户截图（18:04–18:26）+ 会话内浏览器自动化截图（18:35–18:40，`~/.zcode/cli/artifacts/sess_4f68e182-…/`）
 
-## 已定论
+## 判据总表
 
-| # | 项（0201 Task 0.6 Step 2 编号） | 期望（0102 源码结论） | 实测 |
+| # | 项 | 期望（0102 源码结论） | 实测 |
 |---|---|---|---|
-| 1 | 面板激活时 `layout.panelInfo.activePanelId` | `'srw'`（非 null） | ✅ **双通道复现**：麒麟 web 18:05 + DSH 桌面端 18:13 均 `{"activePanelId":"srw"}` |
-| 2 | 主区被占时 `sidebarRight.openResource(address)` | **抛** `no session surface is mounted` | ✅ **18:26 文案逐字一致**：`Error: sidebarRight: no session surface is mounted`（E1 专用注入版实测） |
-| 5 | 主区被占时 `documentPreviews.register` | 可注册（容器只在右栏，可见性另测） | ✅ **API 面通过**（注册成功 + 15s 自动撤销；可见性需真实文档，留 M1 与 PDF 精读一起测） |
-| 8 | RPC 通道往返（宿主服务可达性） | `webServer.register` 直连路径可用 | ✅ 双通道 `diag.caps OK（27 行）`，`connection`/`webServer`/`reflect` 绿 |
-| — | 客户端注入名单 | 已验证 10 + E1 临时 4 | ✅ **14/14 注入成功、激活无失败**（`sidebarRight`/`documentPreviews`/`uiSession`/`conversation` 四名全部可注入） |
-| — | 未注入服务的访问形态 | （源码未明说） | ✅ 双通道一致：**抛错** `cannot get property "X" without inject` → 详录 [E2](E2-qilin-external-bundle.md) 新事实 1 |
+| 1 | 面板激活时 `layout.panelInfo.activePanelId` | `'srw'`（非 null） | ✅ 双通道复现 `{"activePanelId":"srw"}` |
+| 2 | 主区被占时 `sidebarRight.openResource(address)` | **抛** `no session surface is mounted` | ✅ **文案逐字一致** |
+| 3 | 主区被占时 `openResourceIn(sid, address)` | 不抛、只写不画；回对话页 tab 出现 | ✅ 合法地址下未抛；切回对话页右栏出现 `README.md` tab（含文件树/预览） |
+| 4 | 切回对话页右栏恢复 | 恢复 | ✅（第 3 项验证时同时证实） |
+| 5 | 主区被占时 `documentPreviews.register` | 可注册 | ✅ API 面通过（15s 自动撤销）；可见性留 M4 随真实文档测 |
+| 6 | 送提示词：`retain → binding → conversation.input.for(binding.ctx)` | setDraft+submit 落正确会话、不串台 | ✅ 路径 A 全链路通；落点正确。**重要语义发现：`submit()` 是「立即发送」**——消息直接进会话并触发一轮 agent 运行（实测 22.6K tok），**不是停在草稿箱**；M1 若只要填草稿绝不 submit |
+| 7 | 未 retain 直接 `for(actx)` 的错误文案 | `requires a retained Session scope` | ◐ 代码路径保留（按钮走 retain 正路）；负例文案未单独触发，M1 接入时如遇即录 |
+| 8 | RPC 通道往返 | `webServer.register` 直连可用 | ✅ 双通道 `diag.caps OK（27 行）` |
+| 9 | 面板盒模型 `height:100%+overflow-y` | 面板自滚 | ✅ 标准宽度下布局/滚动正常（多张截图）；窄窗口专项留 M1 响应式时顺手验 |
+| 10 | 主区被占时打开设置页 | `settings.section` portal 模态可开 | ✅ 账户菜单 → 设置：整页覆盖层打开，左侧导航出现「**科研工作台（E1 验证）**」区块 |
+| §9.3 | `uiSession.adapter.current` 实时性 | 当前会话唯一权威、切会话跟随 | ✅ key 实时切换（`430b…` → `a39ce6…`） |
+| — | E1 临时注入 4 名单 | 可注入、不破坏激活 | ✅ 14/14 全绿 |
 
-**判定**：0102 §9.1 容器决策（ADR-10）的两个关键前提全部实证——主区 keyed 面板可用，右栏写路径在主区被占时**响亮抛错**（不是静默）。产品的落地纪律随之定稿：**右栏相关 API 调用必须 try/catch + 面板置灰说明**，绝不裸调。
+## 三个 bonus 发现（0102 待回改/补录）
 
-## 待实测（三项，都需要一次用户操作）
+1. **资源地址必须带 scheme**：`sidebarRight.openResource/openResourceIn` 的 address 是 **`qilin-resource://<type>/…`**（ui-sidebar-right service.ts:179/207）；文件用 `qilin-resource://file/session/<sid>/<path>`（ui-chat apply.ts:185 同款）。裸路径/绝对路径抛 `no registered tab type claims "…"`——M1「在查看器打开」按钮必须用这个拼法。
+2. **`conversation.input.for(shell).submit()` 立即发送并烧 token**（触发一轮 agent 运行）；「送提示词」的**填草稿**语义只应调 `setDraft`，submit 必须是显式用户动作。
+3. **工作区外绝对路径**拼进 `file/session` 地址后，预览器报「这个文件不在了」——绝对路径在会话作用域下的解析语义需在 M1 实现「在查看器打开」前用 `fileAddressFor` 等价逻辑核实（ui-chat 用会话 cwd 相对化）。
 
-| # | 操作 | 期望 |
-|---|---|---|
-| 3 | 填 sessionId → 「试延迟打开」→ 切回对话页 | `openResourceIn` 不抛；tab 在对话页出现 |
-| 6/7 | 开会话 → 填 sessionId → 「送草稿到会话」 | 路径 A（retain+binding+conversation.input.for）落草稿到正确会话、不串台 |
-| 10 | 面板占主区时从外壳打开设置页 | 能打开且看到「科研工作台（E1 验证）」区块（portal 模态） |
-| §9.3 | 「uiSession 探测」→ 切会话 → 再按 | key 实时跟随 |
+## 结论
 
-## 已发现的产品侧待办（不阻塞，回 M1/M0 收口处理）
+**ADR-10 全部前提实证成立**：主区 keyed 面板方案可用；右栏 API 在主区被占时响亮抛错（纪律：调用处必须 try/catch + 置灰说明）；设置页可并存（M1 的正式设置页走 `ctx.settings.register` + `settings.section` 槽）；送提示词走路径 A（retain+binding+conversation.input）且默认只 setDraft。
 
-1. **hostHome 通道误判**：诊断面板显示「通道 dsh · home ~/.qilin」——麒麟启动器恒设 `DSH_HOME`（E2 新事实 2）→ ADR-20 回改：`hostHome()` 改正向信号判定（仅 `QILIN_HOME` 显式存在判 qilin，否则 unknown），M1 修。
-2. 「送草稿跳过：需要 sessionId 与 sessions 服务」是**正常守卫**（无会话时 `sessions.list.current` 为空）；补录第 6 项时先在引擎里开一个会话再填 id。
-3. M0 诊断面板后续扩展：把「E1 待实测三项」需要的服务（`sidebarRight`/`documentPreviews`/`settings`）以**临时分支**注入（验证专用 build 或开关），避免为验证污染正式 inject 名单——E1 收口时定做法。
-
-## 归档
-
-- 截图（4 张）：会话内 `~/.zcode/cli/image-cache/sess_4f68e182-…/image-*.png`（2026-10-04）；要点已摘录进本文件表内。
-- 相关：[E2-qilin-external-bundle.md](E2-qilin-external-bundle.md)（装载、记账、注入名单、CLI 勘误）。
+**E1 关闭。** 遗留小项（不阻塞）：第 7 项负例文案、第 9 项窄窗口、第 5 项可见性——均转入 M1/M4 日常。

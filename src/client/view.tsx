@@ -130,7 +130,9 @@ export function DiagView({ ctx }: { readonly ctx: ClientContext }): React.ReactE
   /* ── E1 第 2/3 项：右栏写路径（主区被占时预期响亮抛错）── */
   const tryOpenViewer = useCallback((deferred: boolean): void => {
     const sidebarRight = ctx.sidebarRight
-    const address = 'srw-e1-演示.txt'
+    // 合法资源地址：qilin-resource://file/session/<sid>/<path>（ui-chat apply.ts:185 同款；
+    // 工作区外绝对路径原样拼。裸路径会抛 no registered tab type claims）。
+    const address = `qilin-resource://file/session/${sessionId.trim() || '<sid>'}/Users/libing/kk_Projects/dsh-kylin-srw/README.md`
     if (deferred === true) {
       const openIn = sidebarRight?.openResourceIn
       if (openIn === undefined) {
