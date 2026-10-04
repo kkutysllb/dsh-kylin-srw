@@ -25,7 +25,8 @@ function argOf(name, fallback) {
 }
 
 const qilinProfile = argOf('qilin-profile', 'p0vibe')
-const dshProfile = argOf('dsh-profile', '')
+// DSH 桌面端在用 desktop profile（本机实测 ~/.dsh/profiles/{desktop,web}）。
+const dshProfile = argOf('dsh-profile', 'desktop')
 const qilinRepo = argOf('qilin-repo', join(homedir(), 'kk_Projects', 'QiLin'))
 const skipBuild = process.argv.includes('--skip-build')
 
@@ -70,20 +71,37 @@ async function main() {
 
   /* ── DSH 通道（桌面端） ── */
   console.log('\n═══ DSH 通道（桌面端） ═══')
-  const dshArgs = ['plugin']
-  if (dshProfile !== '') dshArgs.push('--profile', dshProfile)
-  const dshLabel = dshProfile === '' ? '（默认 profile）' : `（profile ${dshProfile}）`
+  const dshArgs = ['plugin', '--profile', dshProfile]
+  const dshLabel = `（profile ${dshProfile}）`
   const dshCheck = spawnSync('dsh', ['--version'], { stdio: 'ignore', shell: false })
   if (dshCheck.error !== undefined || dshCheck.status !== 0) {
     console.warn('⚠ 未找到 dsh CLI（PATH 中无 dsh），跳过 DSH 通道安装')
     failures += 1
   } else {
-    const okAdd = run(`dsh add ${dshLabel}`, 'dsh', [...dshArgs, 'add', linkPath])
-    if (okAdd) {
-      run(`dsh list ${dshLabel}`, 'dsh', [...dshArgs, 'list'])
-      console.log('→ 启动桌面端：直接打开 DSH 桌面应用（host 变更需完全退出重启）')
+    const probe = spawnSync('dsh', ['plugin', '--profile', dshProfile, 'add', linkPath], {
+      cwd: repoRoot, encoding: 'utf8', shell: false,
+    })
+    const refused = (probe.stderr ?? '').includes('managed exclusively by the Electron application')
+    if (probe.status === 0) {
+      console.log(`✓ dsh plugin add 成功 ${dshLabel}`)
+    } else if (refused) {
+      // E2 实测事实（2026-10-04）：desktop profile 由 Electron 应用独占管理，
+      // CLI add 被拒 → 手改 profile package.json 记 link: 依赖（先备份）。
+      console.log(`⚠ profile ${dshProfile} 由 Electron 应用独占管理，CLI add 被拒 → 手改记账`)
+      const handEdit = spawnSync('python3', ['-c', `
+import json, sys, shutil, time
+path = ${JSON.stringify(join(homedir(), '.dsh', 'profiles', dshProfile, 'package.json'))}
+shutil.copy(path, path + '.bak-srw-' + str(int(time.time())))
+with open(path) as f: d = json.load(f)
+d.setdefault('dependencies', {})['dsh-kylin-srw'] = ${JSON.stringify(linkPath)}
+with open(path, 'w') as f: json.dump(d, f, indent=2, ensure_ascii=False)
+print('✓ 已记账（含备份 .bak-srw-*）:', d['dependencies']['dsh-kylin-srw'])
+`], { encoding: 'utf8', shell: false })
+      console.log(handEdit.stdout ?? handEdit.stderr)
+      if (handEdit.status !== 0) failures += 1
+      console.log('→ 重启 DSH 桌面端生效（host 变更必须完全退出重启）')
     } else {
-      console.error('✗ dsh plugin add 失败')
+      console.error(`✗ dsh plugin add 失败：${(probe.stderr ?? probe.stdout ?? '').slice(-300)}`)
       failures += 1
     }
   }
