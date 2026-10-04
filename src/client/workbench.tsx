@@ -421,12 +421,21 @@ export function WorkbenchView({ ctx }: { readonly ctx: ClientContext }): React.R
       try {
         await withTimeout(tryPath(false))
       } catch (pathAError) {
-        await withTimeout(tryPath(true))
+          await withTimeout(tryPath(true))
       }
       if (alive.current) setLitNotice('已把检索任务转给当前会话的 Agent（消息已发送，切到会话页看进展）')
     } catch (cause) {
-      const reason = cause instanceof Error && cause.message === 'timeout' ? '会话输入通路超时（面板占主区时请切回会话视图重试）' : String(cause)
-      if (alive.current) setError(`转给 Agent 失败：${reason}`)
+      // 面板占主区时会话面未挂载：宿主 input shell 需要**活跃的会话控制器**
+      // （实测 setDraft/submit 内部读 undefined 控制器的 sessions）。降级：
+      // 提示词进剪贴板——用户到会话输入框粘贴回车即发（Agent 已带工具与通告）。
+      try {
+        await navigator.clipboard.writeText(prompt)
+        if (alive.current) {
+          setLitNotice('该会话的输入通路未激活（面板占主区）——提示词已复制到剪贴板，到会话输入框粘贴回车即可发起')
+        }
+      } catch {
+        if (alive.current) setError(`转给失败：${String(cause)}；请手动在会话输入框描述检索需求（Agent 已带 srw_literature 工具）`)
+      }
     }
   }, [ctx, litQuery, litSource, overview])
 
