@@ -88,9 +88,21 @@ export function parseArxivAtom(xml: string): LitCandidate[] {
     const updated = extract('updated', block)
     const doi = extract('arxiv:doi', block) ?? extract('doi', block)
     const pdfHref = (() => {
-      const link = block.match(/<link\s[^>]*rel="related"[^>]*type="application\/pdf"[^>]*href="([^"]+)"/)
-        ?? block.match(/<link\s[^>]*type="application\/pdf"[^>]*href="([^"]+)"/)
-      return link === null ? undefined : forceHttps(link[1] ?? '')
+      // 属性顺序无关：真实 feed 是 href 在前（<link href=… rel="related" type="application/pdf"/>）
+      for (const tag of block.matchAll(/<link\s[^>]*>/g)) {
+        const tagText = tag[0] ?? ''
+        const attr = (name: string): string | undefined => {
+          const m = tagText.match(new RegExp(`${name}="([^"]+)"`))
+          return m === null ? undefined : m[1]
+        }
+        const rel = attr('rel')
+        const type = attr('type')
+        const href = attr('href')
+        if (href === undefined) continue
+        if (rel === 'related' && type === 'application/pdf') return forceHttps(href)
+        if (rel === undefined && type === 'application/pdf') return forceHttps(href)
+      }
+      return undefined
     })()
     candidates.push({
       source: 'arxiv',

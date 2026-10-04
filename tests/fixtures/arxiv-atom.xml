@@ -21,7 +21,7 @@
     </author>
     <arxiv:doi>10.48550/ARXIV.2401.12345</arxiv:doi>
     <link rel="alternate" type="text/html" href="http://arxiv.org/abs/2401.12345v2"/>
-    <link rel="related" type="application/pdf" href="http://arxiv.org/pdf/2401.12345v2"/>
+    <link href="http://arxiv.org/pdf/2401.12345v2" rel="related" type="application/pdf" title="pdf"/>
     <arxiv:primary_category term="cs.LG" schema="http://arxiv.org/schemas/atom"/>
     <category term="cs.LG"/>
     <category term="cs.NI"/>

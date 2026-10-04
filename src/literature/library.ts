@@ -150,6 +150,22 @@ export class LibraryStore {
         ...(prev?.pdf !== undefined ? { pdf: prev.pdf } : {}),
       }
     }
+    // 已存在条目做信息补全：重复≠丢弃——新候选可能带来库缺的字段
+    // （首次入库时 arXiv 尚无 PDF 链接、后来 OA 版本出现等）。
+    for (const candidate of candidates) {
+      const key = identityKey(candidate.identity)
+      const prev = doc.entries[key]
+      if (prev === undefined) continue
+      const patched: LitEntry = {
+        ...prev,
+        ...(prev.pdfUrl === undefined && candidate.pdfUrl !== undefined ? { pdfUrl: candidate.pdfUrl } : {}),
+        ...(prev.oaUrl === undefined && candidate.oaUrl !== undefined ? { oaUrl: candidate.oaUrl } : {}),
+        ...(prev.citedByCount === undefined && candidate.citedByCount !== undefined ? { citedByCount: candidate.citedByCount } : {}),
+        seenIn: [...new Set([...prev.seenIn, candidate.source])],
+      }
+      const changed = JSON.stringify(patched) !== JSON.stringify(prev)
+      doc.entries[key] = changed ? { ...patched, updatedAt: now } : prev
+    }
     const saved = await this.save(project, doc, doc.revision)
     const duplicates = verdicts.filter(v => v.verdict.startsWith('duplicate')).length
     return { added: fresh.length, duplicates, doc: saved }
