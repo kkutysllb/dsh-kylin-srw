@@ -6,6 +6,7 @@
  * inject——不做 dsh-kylin-automation 那样的「拿不到的服务」。
  */
 import { type CapRow } from './diag.ts';
+import { WorkspaceStore } from './workspace/project.ts';
 export interface SrwConfig {
     /** 科研总根；空 = 首次由面板引导选择（M1）。 */
     readonly rootDir?: string;
@@ -30,8 +31,16 @@ export declare class SrwService {
     readonly ctx: unknown;
     readonly config: SrwConfig;
     private readonly startedAt;
+    /** 项目 CRUD（目录即真相源）。 */
+    readonly workspace: WorkspaceStore;
+    /** storage 全局里的总根（Task 1.4 srw_index 写入；config 缺省时的回落源）。 */
+    private storageRootDir;
     private constructor();
     static open(ctx: unknown, rawConfig: SrwConfig): Promise<SrwService>;
+    /** 当前科研总根（未设置 = undefined）。单源判定：config 优先，storage 全局回落。 */
+    currentRoot(): string | undefined;
+    /** Task 1.4：root.set 落定后的总根更新入口（进程内生效；持久化在 srw_index）。 */
+    adoptRoot(rootDir: string): void;
     /** 轻量探活（`diag.ping` 端点）。 */
     ping(): {
         readonly pong: true;

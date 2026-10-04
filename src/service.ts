@@ -8,6 +8,7 @@
 
 import { collectCaps, type CapRow } from './diag.ts'
 import { hostHome, type SrwFsLike } from './host.ts'
+import { WorkspaceStore } from './workspace/project.ts'
 export interface SrwConfig {
   /** 科研总根；空 = 首次由面板引导选择（M1）。 */
   readonly rootDir?: string
@@ -34,11 +35,16 @@ export interface SrwInfo {
 }
 
 export class SrwService {
+  /** storage 全局里的总根（Task 1.4 srw_index 写入；config 缺省时的回落源）。 */
+  private storageRootDir: string | undefined
+
   private constructor(
     /** 宿主 ctx（软探测只读使用；领域模块不得经它绕过本服务）。 */
     readonly ctx: unknown,
     readonly config: SrwConfig,
     private readonly startedAt: number,
+    /** 项目 CRUD（目录即真相源）。 */
+    readonly workspace: WorkspaceStore,
   ) {}
 
   static async open(ctx: unknown, rawConfig: SrwConfig): Promise<SrwService> {
@@ -46,7 +52,24 @@ export class SrwService {
       rootDir: typeof rawConfig?.rootDir === 'string' ? rawConfig.rootDir : '',
       offlineMode: rawConfig?.offlineMode === true,
     }
-    return new SrwService(ctx, config, Date.now())
+    const service: SrwService = new SrwService(
+      ctx, config, Date.now(),
+      new WorkspaceStore(() => service.currentRoot()),
+    )
+    return service
+  }
+
+  /** 当前科研总根（未设置 = undefined）。单源判定：config 优先，storage 全局回落。 */
+  currentRoot(): string | undefined {
+    const fromConfig = (this.config.rootDir ?? '').trim()
+    if (fromConfig !== '') return fromConfig
+    const fromStorage = this.storageRootDir?.trim()
+    return fromStorage !== undefined && fromStorage !== '' ? fromStorage : undefined
+  }
+
+  /** Task 1.4：root.set 落定后的总根更新入口（进程内生效；持久化在 srw_index）。 */
+  adoptRoot(rootDir: string): void {
+    this.storageRootDir = rootDir
   }
 
   /** 轻量探活（`diag.ping` 端点）。 */
