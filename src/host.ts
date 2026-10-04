@@ -10,12 +10,17 @@
  */
 
 import { rename, rm, writeFile } from 'node:fs/promises'
-import { isAbsolute, join, resolve } from 'node:path'
+import { resolve } from 'node:path'
 
-/** 宿主 fs 的最小结构面（运行时由注入的 `fs` 服务提供；M0 只用到这三件）。 */
+/** 宿主 fs 的最小结构面（运行时由注入的 `fs` 服务提供）。
+ * 语义对照 QiLin FileSystem 源码（Task 1.0 定稿）：`resolve` 产出稳定目标
+ * 对象（可能做 I/O），`contains` 收两个目标、同步返回 boolean——护栏必须
+ * resolve→contains 两步，不能拿字符串路径自判；`processPath` 把目标换回
+ * 宿主执行世界可打开的绝对路径。 */
 export interface SrwFsLike {
   resolve?(rel: string, opts?: { readonly cwd?: string }): unknown
-  contains?(parent: string, child: string): unknown
+  contains?(parent: unknown, child: unknown): unknown
+  processPath?(target: unknown): string
   writeBytes?(path: string, data: Uint8Array): unknown
 }
 
@@ -70,31 +75,27 @@ export class PathSafetyError extends Error {
   }
 }
 
-/** 路径护栏（ADR-15）：resolve 目标 → `ctx.fs.contains(root, target)`
- * canonical containment 校验。fail-closed：
- * - `contains` 能力缺失 → 抛错（不允许「无护栏也放行」）；
+/** 路径护栏（ADR-15）：resolve root 与目标 → `ctx.fs.contains(rootTarget,
+ * targetTarget)` canonical containment 校验（目标对象语义，Task 1.0 对照
+ * 源码定稿；字符串自判是 resolveWorkspacePath 式的假护栏）。fail-closed：
+ * - `resolve`/`contains` 能力缺失 → 抛错（不允许「无护栏也放行」）；
  * - 目标逃出 root（`../`、符号链接落地在外、绝对路径注入）→ 抛错。
+ * @returns 宿主执行世界可打开的绝对路径（`processPath`，缺失时退化为
+ * node 语义的 resolve 拼接——仅作显示/落点参考，安全判定已由 contains 给出）。
  */
 export async function assertInsideRoot(
   fs: SrwFsLike | undefined,
   rootAbs: string,
   targetRel: string,
 ): Promise<string> {
-  if (fs?.contains === undefined) {
-    throw new PathSafetyError('路径护栏不可用：宿主 fs.contains 缺席（fail-closed）')
+  if (fs?.resolve === undefined || fs.contains === undefined) {
+    throw new PathSafetyError('路径护栏不可用：宿主 fs.resolve/contains 缺席（fail-closed）')
   }
-  const root = resolve(rootAbs)
-  let target: string
-  if (fs.resolve !== undefined) {
-    target = await awaited(fs.resolve(targetRel, { cwd: root })) as string
-  } else if (isAbsolute(targetRel)) {
-    target = resolve(targetRel)
-  } else {
-    target = resolve(join(root, targetRel))
-  }
-  const contained = await awaited(fs.contains(root, target))
-  if (contained !== true) {
+  const rootTarget = await awaited(fs.resolve(rootAbs))
+  const target = await awaited(fs.resolve(targetRel, { cwd: rootAbs }))
+  if (fs.contains(rootTarget, target) !== true) {
     throw new PathSafetyError(`路径越界：${JSON.stringify(targetRel)} 不在科研总根内`)
   }
-  return target
+  if (fs.processPath !== undefined) return fs.processPath(target)
+  return resolve(rootAbs, targetRel)
 }

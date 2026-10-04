@@ -8,12 +8,17 @@
  *   `ctx.fs.contains`（canonical containment）。本模块的所有安全检查
  *   fail-closed：能力缺失就拒绝，绝不静默放行。
  */
-/** 宿主 fs 的最小结构面（运行时由注入的 `fs` 服务提供；M0 只用到这三件）。 */
+/** 宿主 fs 的最小结构面（运行时由注入的 `fs` 服务提供）。
+ * 语义对照 QiLin FileSystem 源码（Task 1.0 定稿）：`resolve` 产出稳定目标
+ * 对象（可能做 I/O），`contains` 收两个目标、同步返回 boolean——护栏必须
+ * resolve→contains 两步，不能拿字符串路径自判；`processPath` 把目标换回
+ * 宿主执行世界可打开的绝对路径。 */
 export interface SrwFsLike {
     resolve?(rel: string, opts?: {
         readonly cwd?: string;
     }): unknown;
-    contains?(parent: string, child: string): unknown;
+    contains?(parent: unknown, child: unknown): unknown;
+    processPath?(target: unknown): string;
     writeBytes?(path: string, data: Uint8Array): unknown;
 }
 /** 宿主 home 口径（仅诊断显示用；数据目录一律经 storageDomain，不经此函数）。
@@ -36,9 +41,12 @@ export declare function writeBinary(fs: SrwFsLike | undefined, absPath: string, 
 export declare class PathSafetyError extends Error {
     constructor(message: string);
 }
-/** 路径护栏（ADR-15）：resolve 目标 → `ctx.fs.contains(root, target)`
- * canonical containment 校验。fail-closed：
- * - `contains` 能力缺失 → 抛错（不允许「无护栏也放行」）；
+/** 路径护栏（ADR-15）：resolve root 与目标 → `ctx.fs.contains(rootTarget,
+ * targetTarget)` canonical containment 校验（目标对象语义，Task 1.0 对照
+ * 源码定稿；字符串自判是 resolveWorkspacePath 式的假护栏）。fail-closed：
+ * - `resolve`/`contains` 能力缺失 → 抛错（不允许「无护栏也放行」）；
  * - 目标逃出 root（`../`、符号链接落地在外、绝对路径注入）→ 抛错。
+ * @returns 宿主执行世界可打开的绝对路径（`processPath`，缺失时退化为
+ * node 语义的 resolve 拼接——仅作显示/落点参考，安全判定已由 contains 给出）。
  */
 export declare function assertInsideRoot(fs: SrwFsLike | undefined, rootAbs: string, targetRel: string): Promise<string>;

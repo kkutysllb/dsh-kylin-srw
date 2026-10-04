@@ -52,28 +52,36 @@ test('hostHome：QILIN_HOME 优先，其次 DSH_HOME；都无则 unknown 且不�
 })
 
 test('assertInsideRoot：包含放行，../ 与绝对注入拒绝，能力缺失 fail-closed', async () => {
-  // fake 的 resolve/contains 按 canonical 语义实现（与 ctx.fs 一致：
-  // resolve 落绝对路径，contains 做规范化后的前缀判断）。
+  // fake 按 ctx.fs 真实语义实现（Task 1.0 对照 QiLin FileSystem 源码）：
+  // resolve 产出稳定目标对象（key 为规范化绝对路径），contains 收两个目标
+  // 做规范化前缀判断，processPath 把目标换回可打开路径。
   const fs = {
-    resolve: (rel: string, opts?: { cwd?: string }) => nodePath.resolve(opts?.cwd ?? process.cwd(), rel),
-    contains: (parent: string, child: string) => {
-      const p = nodePath.resolve(parent)
-      const c = nodePath.resolve(child)
+    resolve: (rel: string, opts?: { cwd?: string }) => ({
+      key: nodePath.resolve(opts?.cwd ?? process.cwd(), rel),
+    }),
+    contains: (parent: { key: string }, child: { key: string }) => {
+      const p = nodePath.resolve(parent.key)
+      const c = nodePath.resolve(child.key)
       return c === p || c.startsWith(`${p}/`)
     },
+    processPath: (target: { key: string }) => target.key,
   }
   assert.equal(await assertInsideRoot(fs, '/root', 'a/b.txt'), '/root/a/b.txt')
   await assert.rejects(() => assertInsideRoot(fs, '/root', '../escape.txt'), PathSafetyError)
   await assert.rejects(() => assertInsideRoot(fs, '/root', '/etc/passwd'), PathSafetyError)
-  // resolve 结果逃出 root（符号链接落点在外）
+  // resolve 结果逃出 root（符号链接落点在外；root 自身仍在 root 内）
   const symlinkFs = {
-    resolve: () => '/outside/x',
-    contains: (parent: string, child: string) => child.startsWith(parent),
+    resolve: (rel: string) => ({ key: rel === '/root' ? '/root' : '/outside/x' }),
+    contains: (parent: { key: string }, child: { key: string }) =>
+      child.key.startsWith(parent.key),
   }
   await assert.rejects(() => assertInsideRoot(symlinkFs, '/root', 'link'), PathSafetyError)
-  // fail-closed：无 contains 能力必须拒绝，而不是放行
+  // fail-closed：resolve/contains 任一缺席都必须拒绝，而不是放行
   await assert.rejects(() => assertInsideRoot(undefined, '/root', 'a.txt'), PathSafetyError)
   await assert.rejects(() => assertInsideRoot({}, '/root', 'a.txt'), PathSafetyError)
+  await assert.rejects(() => assertInsideRoot({
+    contains: () => true,
+  }, '/root', 'a.txt'), PathSafetyError)
 })
 
 test('writeBinary：ctx.fs.writeBytes 可用则走 ctx.fs；否则 node:fs 原子落盘', async () => {

@@ -11,11 +11,12 @@
  */
 import type { Context } from '@deepseek-ai/cordis';
 export declare const name = "dsh-kylin-srw";
-/** M0 注入面：RPC 通道两件套。领域模块进场后按需扩名单——**每个名字都必须
- * 是「目标宿主编排保证存在」的服务**：E3 实测 inject 一个 profile 未挂载的
- * 服务（schedule in web profile）会让插件永久 pending（面板不出现）；
- * ctx.get 同样被栅栏拦。M3 接入 schedule 时必须带能力探测降级。 */
-export declare const inject: readonly ["connection", "webServer"];
+/** M1 注入面（Task 1.0 验证矩阵定稿）：RPC 通道两件套 + 存储四件套。
+ * **每个名字都必须是「目标宿主编排保证存在」的服务**：E3 实测 inject 一个
+ * profile 未挂载的服务（schedule in web profile）会让插件永久 pending
+ * （面板不出现）；ctx.get 同样被栅栏拦。M3 接入 schedule 时必须带能力
+ * 探测降级，且 schedule 名本身不进本名单。 */
+export declare const inject: readonly ["connection", "webServer", "storageDomain", "workspaceRegistry", "settings", "fs"];
 /** Plugin configuration (patch-row `config` values are read defensively). */
 export interface Config {
     readonly rootDir?: string;
