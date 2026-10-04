@@ -1,6 +1,7 @@
 /** 客户端宿主上下文的最小类型面（自包含，无宿主模块导入——与 vibe 同纪律）。
- * slots/connection/layout 等由 client inject 服务在运行时提供；未注入的
- * 服务在这里一律可选，诊断面对「缺席」如实呈现（这正是 E1 要的数据）。
+ * 服务由 client inject 名单在运行时提供；未注入的访问会抛错
+ * `cannot get property "X" without inject`（E2 实测），类型一律可选、
+ * 使用处先判空。
  */
 export interface SlotRegistration {
     readonly name: string;
@@ -53,22 +54,37 @@ export interface InputShell {
     setDraft?(text: string): void;
     submit?(mode?: unknown): void;
 }
-/** E1 候选面：M0 未进 inject 名单（缺名会激活失败——vibe 0.2.0 实测），
- * 诊断面软探测并如实报告「未注入」；E1 结论后才决定是否扩名单。 */
-export interface E1CandidateFaces {
-    readonly sidebarRight?: Record<string, unknown>;
-    readonly documentPreviews?: Record<string, unknown>;
-    readonly settings?: Record<string, unknown>;
-    readonly uiSession?: Record<string, unknown> & {
-        readonly adapter?: {
-            readonly current?: {
-                getSnapshot?(): {
-                    readonly key?: string;
-                };
+/** 右栏服务（ui-sidebar-right；0102 §9.1：主区被占时写路径抛
+ * `no session surface is mounted`）。address 是资源地址字符串。 */
+export interface SidebarRightService {
+    openResource?(address: string, options?: Record<string, unknown>): void;
+    openResourceIn?(sessionId: string, address: string, options?: Record<string, unknown>): void;
+}
+/** 文档预览注册表（ui-sidebar-documentpreview；容器只在右栏）。 */
+export interface DocumentPreviewsService {
+    register?(definition: {
+        readonly id: string;
+        readonly extensions: readonly string[];
+        readonly binaryExtensions?: readonly string[];
+        readonly title: () => string;
+        readonly loading: 'text-pages' | 'bytes-complete' | 'renderer';
+    }): () => void;
+}
+/** 会话 UI 权威（ui-session）：当前会话唯一读数。 */
+export interface UiSessionService {
+    readonly adapter?: {
+        readonly current?: {
+            getSnapshot?(): {
+                readonly key?: string;
             };
         };
     };
-    readonly conversation?: Record<string, unknown>;
+}
+/** 会话输入面（ui-conversation）：路径 A 的 `conversation.input.for(binding.ctx)`。 */
+export interface ConversationService {
+    readonly input?: {
+        for?(carrier: unknown): InputShell;
+    };
 }
 export interface ClientContext {
     readonly slots?: SlotsService;
@@ -81,5 +97,10 @@ export interface ClientContext {
     readonly 'remote.session'?: Record<string, unknown>;
     readonly modelDirectories?: Record<string, unknown>;
     readonly layout?: LayoutService;
+    /** ── E1 专用临时注入（2026-10-04；E1 收口后按结论保留或撤）── */
+    readonly sidebarRight?: SidebarRightService;
+    readonly documentPreviews?: DocumentPreviewsService;
+    readonly uiSession?: UiSessionService;
+    readonly conversation?: ConversationService;
     effect?(factory: () => unknown, label: string): unknown;
 }
