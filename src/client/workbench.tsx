@@ -364,7 +364,17 @@ export function WorkbenchView({ ctx }: { readonly ctx: ClientContext }): React.R
       setError('会话输入通路不可达（sessions/conversation 未注入）')
       return
     }
-    const current = (sessions.list?.getSnapshot?.() as { current?: string } | undefined)?.current
+    // 会话 id 主源：uiSession.adapter.current.key（实测返回正确 id 字符串）；
+    // sessions.list 的 current 形状不可靠（litToAgent 首版用它导致 retain 挂死）。
+    let current: string | undefined
+    try {
+      const key = ctx.uiSession?.adapter?.current?.getSnapshot?.().key
+      if (typeof key === 'string' && key !== '') current = key
+    } catch { /* 探测失败走 fallback */ }
+    if (current === undefined || current === '') {
+      const snap = sessions.list?.getSnapshot?.() as { current?: unknown } | undefined
+      if (typeof snap?.current === 'string' && snap.current !== '') current = snap.current
+    }
     if (current === undefined || current === '') {
       setError('没有打开中的会话——先在左侧开一个会话（agent 任务需要会话承载）')
       return
