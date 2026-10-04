@@ -151,13 +151,18 @@ export class LibraryStore {
       }
     }
     // 已存在条目做信息补全：重复≠丢弃——新候选可能带来库缺的字段
-    // （首次入库时 arXiv 尚无 PDF 链接、后来 OA 版本出现等）。
+    // （首次入库时 arXiv 尚无 PDF 链接、后来 OA 版本出现；或首次入库元数据
+    // 不全——agent 剪掉了 authors/year——补全候选带来权威值时一并治愈）。
     for (const candidate of candidates) {
       const key = identityKey(candidate.identity)
       const prev = doc.entries[key]
       if (prev === undefined) continue
+      const yearHealed = prev.identity.year === 0 && candidate.identity.year > 0
+      const authorsHealed = prev.authors.length === 0 && candidate.authors.length > 0
       const patched: LitEntry = {
         ...prev,
+        ...(yearHealed ? { identity: { ...prev.identity, year: candidate.identity.year } } : {}),
+        ...(authorsHealed ? { authors: [...candidate.authors] } : {}),
         ...(prev.pdfUrl === undefined && candidate.pdfUrl !== undefined ? { pdfUrl: candidate.pdfUrl } : {}),
         ...(prev.oaUrl === undefined && candidate.oaUrl !== undefined ? { oaUrl: candidate.oaUrl } : {}),
         ...(prev.citedByCount === undefined && candidate.citedByCount !== undefined ? { citedByCount: candidate.citedByCount } : {}),

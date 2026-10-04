@@ -205,7 +205,7 @@ export function searchOutputFor(items: readonly LitCandidate[]): {
 } {
   return {
     count: items.length,
-    hint: '入库用 action=import，items 传这些条目原样；project 用目标项目 slug',
+    hint: '入库用 action=import，items 传这些条目原样（缺 authors/year 也会在入库时自动补全）；project 用目标项目 slug',
     items: items.map(item => ({
       source: item.source,
       identity: item.identity,
@@ -226,7 +226,7 @@ export function srwLiteratureToolDef(service: SrwService): SrwToolDef {
     description: [
       '文献通路（科研工作台）：search 三源检索（arxiv/openalex/crossref）；import 检索结果入项目库（需审批，自动去重+撤稿标红）；',
       'pdf 下载条目 PDF 到项目 literature/pdf/（需审批，白名单源+SSRF 防护）；bibtex 导出项目库到 paper/refs.bib（撤稿条目跳过）。',
-      'import 前需要项目已存在（先用 srw_project create/open）；科研总根未设置时提示用户在面板选择。',
+      'import 前需要项目已存在（先用 srw_project create/open）；候选缺 authors/year 时入库自动从 arXiv 补全（离线退化原样）；科研总根未设置时提示用户在面板选择。',
     ].join(''),
     parameters: {
       type: 'object',

@@ -29,6 +29,8 @@ export interface LiteratureDeps {
   readonly offlineMode: () => boolean
   /** 当前总根（动态；未设置时库/账本动作 NO_ROOT）。 */
   readonly rootDir: () => string | undefined
+  /** 元数据自愈：按 arXiv id 批量取权威元数据（缺省真网 id_list；测试注入 stub）。 */
+  readonly enrichByIds?: (ids: readonly string[]) => Promise<readonly LitCandidate[]>
 }
 
 function assertSource(source: string): LitSource {
@@ -86,12 +88,14 @@ export class LiteratureService {
   private readonly fs: SrwFsLike | undefined
   private readonly offline: () => boolean
   private readonly root: () => string | undefined
+  private readonly enrichByIds: (ids: readonly string[]) => Promise<readonly LitCandidate[]>
   readonly gate: RateGate
 
   constructor(deps: LiteratureDeps) {
     this.fs = deps.fs
     this.offline = deps.offlineMode
     this.root = deps.rootDir
+    this.enrichByIds = deps.enrichByIds ?? (async ids => await fetchArxivByIds({ gate: this.gate }, ids))
     this.gate = new RateGate({
       ledgerPath: () => {
         const root = this.root()
@@ -129,14 +133,69 @@ export class LiteratureService {
     }
   }
 
-  /** 入库：批内+库内去重 → 新条目 DOI 撤稿核查（失败不阻断）→ 标红。 */
+  /** 元数据自愈：调用方（agent 组参/用户手输）常剪掉 authors/year——带 arxivId
+   * 但 year=0 或 authors 空的候选，入库前批量拉 arXiv 权威元数据**只补空缺**
+   * （不覆盖调用方已给字段）。自愈失败/离线不阻断入库（退化原样入库）。
+   * 返回补全世界（汇报用，键为去版本 arXiv id）。 */
+  private async enrichThin(candidates: readonly LitCandidate[]): Promise<{
+    candidates: LitCandidate[]
+    enriched: string[]
+  }> {
+    const need = candidates.filter(item => item.identity.arxivId !== undefined
+      && (item.identity.year === 0 || item.authors.length === 0))
+    if (need.length === 0) return { candidates: [...candidates], enriched: [] }
+    const ids = [...new Set(need.map(item => item.identity.arxivId?.replace(/v\d+$/, '') ?? ''))].filter(id => id !== '')
+    let authoritative: readonly LitCandidate[]
+    try {
+      authoritative = await this.enrichByIds(ids)
+    } catch { return { candidates: [...candidates], enriched: [] } }
+    const byId = new Map<string, LitCandidate>()
+    for (const full of authoritative) {
+      const raw = full.identity.arxivId
+      if (raw !== undefined) byId.set(raw.replace(/v\d+$/, '').toLowerCase(), full)
+    }
+    const out: LitCandidate[] = []
+    const enriched: string[] = []
+    for (const candidate of candidates) {
+      const id = candidate.identity.arxivId
+      const full = id === undefined ? undefined : byId.get(id.replace(/v\d+$/, '').toLowerCase())
+      const thin = candidate.identity.year === 0 || candidate.authors.length === 0
+      if (full === undefined || !thin) {
+        out.push(candidate)
+        continue
+      }
+      const merged: LitCandidate = {
+        ...candidate,
+        identity: {
+          ...candidate.identity,
+          ...(candidate.identity.year === 0 && full.identity.year > 0 ? { year: full.identity.year } : {}),
+        },
+        authors: candidate.authors.length > 0 ? candidate.authors : full.authors,
+        abstract: candidate.abstract !== '' ? candidate.abstract : full.abstract,
+        ...(candidate.pdfUrl === undefined && full.pdfUrl !== undefined ? { pdfUrl: full.pdfUrl } : {}),
+        ...(candidate.oaUrl === undefined && full.oaUrl !== undefined ? { oaUrl: full.oaUrl } : {}),
+        ...(candidate.publishedAt === undefined && full.publishedAt !== undefined ? { publishedAt: full.publishedAt } : {}),
+      }
+      out.push(merged)
+      if (merged.identity.year !== candidate.identity.year || merged.authors.length !== candidate.authors.length) {
+        if (id !== undefined) enriched.push(id.replace(/v\d+$/, ''))
+      }
+    }
+    return { candidates: out, enriched }
+  }
+
+  /** 入库：元数据自愈 → 批内+库内去重 → 新条目 DOI 撤稿核查（失败不阻断）→ 标红。 */
   async importEntries(project: string, candidatesInput: readonly unknown[]): Promise<{
     added: number
     duplicates: number
     retracted: string[]
+    enriched: string[]
   }> {
     const slug = assertProject(project)
-    const candidates = candidatesInput.map(candidateFromInput)
+    const parsed = candidatesInput.map(candidateFromInput)
+    const { candidates, enriched } = this.offline()
+      ? { candidates: parsed, enriched: [] }
+      : await this.enrichThin(parsed)
     const store = this.store(slug)
     const result = await store.upsert(slug, candidates)
     const retracted: string[] = []
@@ -155,7 +214,7 @@ export class LiteratureService {
         } catch { /* 撤稿核查失败不阻断入库 */ }
       }
     }
-    return { added: result.added, duplicates: result.duplicates, retracted }
+    return { added: result.added, duplicates: result.duplicates, retracted, enriched }
   }
 
   /** 按 DOI 直取元数据（校验真伪）。 */

@@ -14,6 +14,8 @@ export interface LiteratureDeps {
     readonly offlineMode: () => boolean;
     /** 当前总根（动态；未设置时库/账本动作 NO_ROOT）。 */
     readonly rootDir: () => string | undefined;
+    /** 元数据自愈：按 arXiv id 批量取权威元数据（缺省真网 id_list；测试注入 stub）。 */
+    readonly enrichByIds?: (ids: readonly string[]) => Promise<readonly LitCandidate[]>;
 }
 /** RPC/工具传入的候选归一校验（宽松形状 → LitCandidate）。 */
 export declare function candidateFromInput(raw: unknown): LitCandidate;
@@ -21,6 +23,7 @@ export declare class LiteratureService {
     private readonly fs;
     private readonly offline;
     private readonly root;
+    private readonly enrichByIds;
     readonly gate: RateGate;
     constructor(deps: LiteratureDeps);
     private requireRoot;
@@ -29,11 +32,17 @@ export declare class LiteratureService {
     private store;
     /** 三源检索（不入库）。 */
     search(source: string, query: string, limit?: number): Promise<readonly LitCandidate[]>;
-    /** 入库：批内+库内去重 → 新条目 DOI 撤稿核查（失败不阻断）→ 标红。 */
+    /** 元数据自愈：调用方（agent 组参/用户手输）常剪掉 authors/year——带 arxivId
+     * 但 year=0 或 authors 空的候选，入库前批量拉 arXiv 权威元数据**只补空缺**
+     * （不覆盖调用方已给字段）。自愈失败/离线不阻断入库（退化原样入库）。
+     * 返回补全世界（汇报用，键为去版本 arXiv id）。 */
+    private enrichThin;
+    /** 入库：元数据自愈 → 批内+库内去重 → 新条目 DOI 撤稿核查（失败不阻断）→ 标红。 */
     importEntries(project: string, candidatesInput: readonly unknown[]): Promise<{
         added: number;
         duplicates: number;
         retracted: string[];
+        enriched: string[];
     }>;
     /** 按 DOI 直取元数据（校验真伪）。 */
     resolveDoi(doi: string): Promise<LitCandidate>;
