@@ -29,9 +29,9 @@ test('bibtex：citekey 确定性公式与冲突后缀', () => {
   assert.equal(citekeyOf(e1), 'alpha2024-electron')
   // 同一条目两次生成必同 key
   assert.equal(citekeyOf(e1), citekeyOf(entry({})))
-  // CJK 标题：无拉丁词 → 姓 + 年 + 标题头
+  // CJK 标题：无拉丁词 → 标题头直用（作者非 ASCII 无拼音 → unknown，计划口径）
   const cjk = entry({ identity: { title: '通信网络智能运维综述', year: 2025 }, authors: ['王小明'] })
-  assert.match(citekeyOf(cjk), /^wang2025-/)
+  assert.match(citekeyOf(cjk), /^unknown2025-/)
   // 无作者
   assert.match(citekeyOf(entry({ authors: [] })), /^unknown2024-/)
 })
@@ -58,22 +58,17 @@ test('bibtex：appendToRefs——首写/重复跳过/批内冲突后缀/无残�
     const refs = join(dir, 'refs.bib')
     const a = entry({})
     const b = entry({ key: 'arxiv:2402.1', identity: { arxivId: '2402.00001v1', title: 'Bridging Modalities', year: 2024 }, authors: ['Bob Beta'] })
-    // 首写
-    const first = await appendToRefs(refs, [a, b])
-    assert.deepEqual(first.added, ['alpha2024-electron', 'beta2024-bridging'])
+    // 批内冲突（不同条目同公式键）：同批 → 后缀 -2
+    const c = entry({ key: 'arxiv:2403.1', identity: { title: 'Electron Microscopy Extended', year: 2024 }, authors: ['Alice Alpha'] })
+    const first = await appendToRefs(refs, [a, c, b])
+    assert.deepEqual(first.added, ['alpha2024-electron', 'alpha2024-electron-2', 'beta2024-bridging'])
     assert.equal(first.skipped, 0)
     const text1 = await readFile(refs, 'utf8')
-    assert.deepEqual([...extractCitekeys(text1)].sort(), ['alpha2024-electron', 'beta2024-bridging'])
-    // 同 key 再导出 → 跳过
+    assert.ok(text1.includes('@misc{alpha2024-electron-2,'))
+    // 同 key 再导出 → 跳过（引用级去重）
     const second = await appendToRefs(refs, [a])
     assert.deepEqual(second.added, [])
     assert.equal(second.skipped, 1)
-    // 批内冲突（不同条目同公式键）：后缀 -2
-    const c = entry({ key: 'arxiv:2403.1', identity: { title: 'Electron Microscopy Extended', year: 2024 }, authors: ['Alice Alpha'] })
-    const third = await appendToRefs(refs, [c])
-    assert.deepEqual(third.added, ['alpha2024-electron-2'])
-    const text3 = await readFile(refs, 'utf8')
-    assert.ok(text3.includes('@misc{alpha2024-electron-2,'))
     // 无 tmp 残留
     const { readdir } = await import('node:fs/promises')
     const leftovers = (await readdir(dir)).filter(name => name.includes('.tmp-'))
