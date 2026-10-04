@@ -183,6 +183,16 @@ test('handleSrwRpc：ping/echo/caps 正常，未知端点 not-found', async () =
   const unknown = await handleSrwRpc(service, 'diag.nope', {}, signal)
   assert.equal(unknown.ok, false)
   assert.equal((unknown as { error: { code: string } }).error.code, 'not-found')
+  // 信封契约（vendored client parseConnectionResponse）：失败分支的 error
+  // 必须是 record 且带 string code/message + **record details**——缺 details
+  // 客户端直接抛 "invalid server-response failure"（2026-10-04 用户实测踩中）。
+  if (unknown.ok !== false) throw new Error('unreachable')
+  const err = unknown.error
+  assert.equal(typeof err.code, 'string')
+  assert.equal(typeof err.message, 'string')
+  assert.equal(typeof err.details, 'object')
+  assert.notEqual(err.details, null)
+  assert.ok(!Array.isArray(err.details))
 })
 
 test('registerSrwRpc：webServer 缺席抛 NO_PROVIDER；fake 双服务可注册可注销', async () => {

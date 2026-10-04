@@ -20,6 +20,7 @@ export type RpcResult<T> = {
     readonly error: {
         readonly code: string;
         readonly message: string;
+        readonly details: Record<string, never>;
     };
 };
 interface SrwWebServerLike {

@@ -20,14 +20,18 @@ const RPC_BODY_LIMIT_BYTES = 4 * 1024 * 1024
 
 export type RpcResult<T> =
   | { readonly ok: true; readonly value: T }
-  | { readonly ok: false; readonly error: { readonly code: string; readonly message: string } }
+  | { readonly ok: false; readonly error: { readonly code: string; readonly message: string; readonly details: Record<string, never> } }
 
 function ok<T>(value: T): RpcResult<T> {
   return { ok: true, value }
 }
 
+/** 错误信封必须带 `details` record：vendored 客户端
+ * （connection/src/client/rpc.ts parseConnectionResponse）对失败分支校验
+ * `error.details` 是对象，缺了直接抛 "invalid server-response failure"——
+ * 业务错误在面板上显示成类型错误（2026-10-04 用户实测踩中）。 */
 function fail(code: string, message: string): RpcResult<never> {
-  return { ok: false, error: { code, message } }
+  return { ok: false, error: { code, message, details: {} } }
 }
 
 function toErrorResult(error: unknown, aborted: boolean): RpcResult<never> {
