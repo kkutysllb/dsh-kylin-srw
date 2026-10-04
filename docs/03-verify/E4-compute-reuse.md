@@ -1,47 +1,51 @@
-# E4 · 算力复用三级链与长任务脱离托管（阶段记录）
+# E4 · 算力复用三级链与长任务脱离托管（终版）
 
-- 日期：2026-10-04
-- 目标主机：**WSL `125.64.108.97:18908`**（用户口径的 M7 初期算力目标；`26训练`/`74推理` 推迟）
-- 状态：**①② 级适用性定论 + ③ 级通路配置就绪但当前不可达**；机制演练（V12）待 SSH 可用窗口
-- 证据分级：✅ 本会话实跑；⚠ 未核实
+- 日期：2026-10-04（18:44–18:52；WSL 重启后重跑）
+- 目标主机：**WSL `125.64.108.97:18908`**（用户口径的 M7 初期算力目标）
+- 状态：**✅ 第 ③ 级直连 + V12 脱离托管全部通过**；① 机制保留、② 待桌面端窗口
+- 证据分级：✅ 本会话实跑（命令与输出摘要如下）
 
 ## 逐级结论
 
-### 第 ① 级 ControlMaster 复用 —— 注册在案（dev home），当前不可用
+### 第 ③ 级 直连 —— ✅ 通过（主路径成立）
 
-- ✅ **WSL 主机已注册**：`~/.kcoder-dev/ssh-remote/hosts.json` 命中 `125.64.108.97`（2 处）——注意是 **`.kcoder-dev`**（dsh-ssh-remote 的 dev home），不是 0102 记录的 `~/.kcoder`；两套 home 并存，`compute/hosts` 实现要**两处都探测**（ADR-20 候选补充）。
-- ✅ `~/.ssh/config` 已有两条由 ssh-remote 引导生成的主机别名：`dsh-wsl2`（User `kkutys`，key `~/.ssh/dsh_wsl2_ed25519`）与 `dsh-125-64-108-97`（key 在 `~/.kcoder-dev/ssh-remote/keys/`）→ **用户侧凭据引导已完成，我们永远不需要碰 `credentials.enc`**。
-- ✅ 两处 `cm/` 目录均**无在线 socket**（master 不在线）→ 第 ① 级的前提「用户近期用过 SSH 工具」当前不成立。**裁定：本级机制保留为 P0 优先，可用性随宿主使用浮动；实现上「探测 socket 存在才尝试」。
+- ✅ `ssh -o BatchMode=yes dsh-wsl2 'echo CONNECTED'` → `CONNECTED`（key 认证、零交互、零凭据读取）。
+- ✅ 环境盘点（V13 WSL 基线）：
+  - OS：WSL2，kernel `6.18.33.2-microsoft-standard-WSL2`，x86_64，host `kkutysllb`；
+  - **`nvidia-smi` 不可用——这台 WSL 当前没有 GPU 透传**：M7 的 GPU 作业（V13 基线、CUDA_VISIBLE_DEVICES 注入）**不能在本机验收**，真实 GPU 运行仍需 `26训练`/`74推理` 在线窗口或给本机装驱动/直通；本机定位调整为「远程执行机制验收 + CPU 型作业」；
+  - `python3 3.14.4` ✓、`bash` ✓、`setsid /usr/bin/setsid` ✓、`node` ✗（实验环境需自带/远端安装）。
 
-### 第 ② 级 工具表 `ssh_run` —— 待测（依赖 DSH 桌面端会话）
+### V12 长任务脱离托管 —— ✅ 全套通过（架构级判据）
 
-- ⚠ `ctx.tools.execute('ssh_run')` 需要 agent 作用域 + callId，且 dsh-ssh-remote 装在 **DSH 桌面端**世界（`~/.kcoder(-dev)`）——麒麟 web profile 未装。实测方式：在桌面端开会话由 agent 调用。**待用户配合窗口**；我们自己的审批门在前（0102 §8.2）。
+| 步骤 | 实测 |
+|---|---|
+| `setsid nohup … & echo $! > pid` 点火 | ✅ `launched pid=740`，ssh 会话正常返回 |
+| **会话退出后判活**（新连接 `kill -0 $(cat pid)`） | ✅ **ALIVE**——远端进程不随 SSH 会话存活，0102 §11.2 的派发纪律成立 |
+| 日志按字节偏移续读 | ✅ `head -c 40` + `tail -c +41` 两段拼接与全量一致，无重复无缺口（N=1-based 已本地验证） |
+| 显式终态 | ✅ 12 tick 全部完成；`exit 文件=0`、`done 文件` 就位（「显式成功而非静默」契约可落地） |
+| 清理 | ✅ 远端临时文件已删 |
 
-### 第 ③ 级 直连 —— 配置就绪，**当前不可达（待在线窗口）**
+### 第 ① 级 ControlMaster 复用 —— 机制保留，可用性浮动
 
-- ✅ TCP `125.64.108.97:18908` 连通（`nc -z` 成功）。
-- ✅ SSH 通路配置齐备（config 别名 + 独立 key，BatchMode 可验）。
-- ❌ **SSH banner 不可达**：banner 探测 15s 空响应；`ssh` 先报 `timed out during banner exchange`、后报 `Connection closed`——典型「Windows 侧端口转发存活、WSL 内 sshd 未运行」。**需要用户在 Windows 侧启动 WSL/sshssd** 后重跑（这是唯一的阻塞点）。
-- 预期通过后的验收项（待重跑）：`echo ok` 连通 → `nvidia-smi -L` GPU 盘点 → python3/node 环境 → `uname`。
+- ✅ WSL 已注册于 `~/.kcoder-dev/ssh-remote/hosts.json`（**dev home**——与 `~/.kcoder` 双 home 并存，0102 §11.1 待补注：`compute/hosts` 两处探测）。
+- ✅ `.ssh/config` 已有 ssh-remote 引导的别名与独立 key（`dsh-wsl2` / `dsh-125-64-108-97`）→ **我们永不碰 `credentials.enc`** 的红线成立且无代价。
+- ✅ 两处 `cm/` 当前无在线 socket → 实现纪律：**探测到 `<home>/ssh-remote/cm/<id>.sock` 存在才尝试复用**，否则走 ③。
 
-## V12 长任务脱离托管 —— 待 SSH 窗口（判据已定稿）
+### 第 ② 级 工具表 `ssh_run` —— 待测（低优先）
 
-- ✅ `tail -c +N` 的 N 为 **1-based** 已本地验证（`tail -c +3` 于 `ABCDEFGHIJ` 得 `CDEFGHIJ`）。
-- ✅ 注记：macOS 无 `setsid`（远端 Linux 有）——`scripts/remote/launch.sh` 只在远端执行，无碍；但本地 fixture 测试不能复用同一脚本路径。
-- 待跑（SSH 恢复后 ~5 分钟）：
-  1. `setsid nohup bash -c 'sleep 20 && echo done > /tmp/srw-e4.txt' >/tmp/srw-e4.log 2>&1 & echo $! > /tmp/srw-e4.pid`
-  2. 断开本 ssh → 重连接 `kill -0 $(cat /tmp/srw-e4.pid)` 判活 → 20s 后验 done 文件与退出码文件；
-  3. 日志偏移续读：两段式 `tail -c +1` / `tail -c +$((${已读}+1))` 无重复无缺口。
+- ⚠ 需要 DSH 桌面端会话由 agent 调用（麒麟 web profile 未装 dsh-ssh-remote）。第 ③ 级已是可用主路径，本级降为「增强项」，M7 前找桌面端窗口补测一次即可。
 
-## 对架构/计划的回改项
+## 对架构/计划的回改项（Task 0.10 汇总清单）
 
 | 项 | 回改 |
 |---|---|
-| hosts.json 位置 | 0102 §11.1「`<home>/ssh-remote/hosts.json`」补注：**`~/.kcoder` 与 `~/.kcoder-dev` 双 home 并存，`compute/hosts` 两处探测、以修改时间新者为准** |
-| 三级链适用性 | §11.1 的「WSL 预计不在 hosts.json」被推翻——**已注册**（dev home），①②③ 三级对 WSL 全部适用 |
-| RISK-4 | 由「中」改「低」：注册/凭据/别名全部就绪，唯一变量是 sshd 在线窗口（RISK-10 同源） |
-| Task 7.2 | 补「双 home 探测」用例 |
+| 0102 §11.1 | 「WSL 预计不在 hosts.json」**推翻**：已注册于 dev home；补「双 home（`~/.kcoder` + `~/.kcoder-dev`）探测」 |
+| 0102 §11.3 / RISK-10 | 本机 WSL **无 GPU**：M7 真实 GPU 验收仍需远程窗口；本机承担「机制验收 + CPU 作业」 |
+| RISK-4 | 「中 → 低」：直连主路径实测通过，三级链只剩增强项 |
+| RISK-13 / V12 | **关闭**：脱离托管 + 偏移续读 + 显式终态全部实测通过 |
+| 0201 Task 7.2 | 补双 home 探测用例；Task 7.5 的偏移续读语义已验证（N=1-based） |
 
-## 阻塞与请求
+## 遗留
 
-**唯一阻塞**：WSL 内 sshd 未运行。请在 Windows 侧任选其一：① 启动 WSL（`wsl` 进入后 `sudo service ssh start` 或等效）；② 若转发由 wsltty/nat 等方案托管，重启该转发。就绪后我立即重跑第 ③ 级连通 + V12 全套（约 5 分钟出全部结论）。
+- 第 ② 级 `ssh_run` 补测（桌面端窗口，≤10 分钟）。
+- 真实 GPU 基线（`26训练`/`74推理`）——M7 排期，不阻塞 M0。
