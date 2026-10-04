@@ -82,3 +82,22 @@ test('library：STALE 乐观并发拒绝 + 坏 JSON 抛 INVALID + 坏 slug 拒',
     await assert.rejects(() => unguarded.load('proj'), (e: unknown) => e instanceof Error && e.message.includes('fail-closed'))
   })
 })
+
+test('literature：offlineMode 网络动作 OFFLINE 拒绝', async () => {
+  const { LiteratureService } = await import('../src/literature/service.ts')
+  const dir = await mkdtemp(join(tmpdir(), 'srw-off-'))
+  try {
+    const lit = new LiteratureService({ fs: fsLike, offlineMode: () => true, rootDir: () => dir })
+    await assert.rejects(() => lit.search('arxiv', 'test'), (e: unknown) => (e as { code?: string }).code === 'OFFLINE')
+    // import 本身是本地写（真相源文件），offline 下成功但跳过撤稿核查；
+    // fetchPdf 是网络动作 → OFFLINE 拒绝
+    const imported = await lit.importEntries('proj', [{ source: 'arxiv', identity: { arxivId: '2401.00001v1', title: 'Offline Paper', year: 2024 }, authors: [], venue: 'arXiv', abstract: '', pdfUrl: 'https://arxiv.org/pdf/2401.00001v1' }])
+    assert.equal(imported.added, 1)
+    await assert.rejects(() => lit.fetchPdf('proj', 'arxiv:2401.00001'), (e: unknown) => (e as { code?: string }).code === 'OFFLINE')
+    // 库管理（无网络）不受 offline 限制
+    const entries = await lit.lib('proj')
+    assert.equal(entries.length, 1)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
