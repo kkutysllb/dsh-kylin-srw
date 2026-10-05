@@ -7,11 +7,9 @@ import { ServiceError } from '../service.ts'
 
 export const WATCH_SCHEMA_VERSION = 1
 
-/** 频率地板：宿主 every≥60 之上再收紧——文献抓取没意义更频，且礼貌限速。
- * 顶=86400（宿主自动化任务 create 校验 every_seconds ≤1 天，3091 实测
- * 「must be an integer 1..86400」）；周级订阅应在宿主自动化页改 cron。 */
+/** 频率地板：宿主 schedule 仅限 every≥60（domain.ts MIN_EVERY_INTERVAL_SECONDS），
+ * 这里再收紧——文献抓取没意义更频，且礼貌限速。无上限（周/双周订阅合法）。 */
 export const WATCH_EVERY_FLOOR = 900
-export const WATCH_EVERY_CEIL = 86_400
 
 export const WATCH_SOURCES = ['arxiv', 'openalex', 'crossref'] as const
 export type WatchSource = (typeof WATCH_SOURCES)[number]
@@ -72,8 +70,8 @@ export function validateWatchInput(input: {
   if (query.length > 500) throw new ServiceError('INVALID', 'query 过长（≤500 字符）')
   const everySeconds = input.everySeconds
   const every = typeof everySeconds === 'number' && Number.isInteger(everySeconds) ? everySeconds : 86_400
-  if (every < WATCH_EVERY_FLOOR || every > WATCH_EVERY_CEIL) {
-    throw new ServiceError('INVALID', `everySeconds 必须在 ${WATCH_EVERY_FLOOR}..${WATCH_EVERY_CEIL}（15 分钟～每天，宿主自动化任务上限），收到 ${JSON.stringify(everySeconds)}`)
+  if (every < WATCH_EVERY_FLOOR) {
+    throw new ServiceError('INVALID', `everySeconds 至少 ${WATCH_EVERY_FLOOR}（15 分钟），收到 ${JSON.stringify(everySeconds)}`)
   }
   return { project, source: source as WatchSource, query, everySeconds: every }
 }

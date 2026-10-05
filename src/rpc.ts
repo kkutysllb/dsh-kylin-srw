@@ -69,8 +69,10 @@ function optString(body: Record<string, unknown>, key: string): string | undefin
 function optNumber(body: Record<string, unknown>, key: string): number | undefined {
   const value = body[key]
   if (value === undefined) return undefined
-  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1 || value > 86_400) {
-    throw new ServiceError('INVALID', `${key} must be an integer 1..86400`)
+  // 只做通用整数校验；范围语义归各领域层（E3 时代误把 86400 硬顶写在这里，
+  // 每周订阅 604800 被我自己的入口拦下——用户实测踩中，宿主 schedule 仅限 ≥60）。
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1) {
+    throw new ServiceError('INVALID', `${key} must be a safe integer >= 1`)
   }
   return value
 }

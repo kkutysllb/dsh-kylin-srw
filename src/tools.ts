@@ -292,7 +292,7 @@ export function srwWatchToolDef(service: SrwService): SrwToolDef {
         project: { type: 'string', description: 'create 的目标项目 slug' },
         source: { type: 'string', enum: ['arxiv', 'openalex', 'crossref'], description: 'create 的检索源（缺省 arxiv）' },
         query: { type: 'string', description: 'create 的检索词' },
-        everySeconds: { type: 'number', description: 'create 的抓取间隔秒（900..86400 即 15 分钟～每天，缺省每天；宿主自动化任务上限 1 天）' },
+        everySeconds: { type: 'number', description: 'create 的抓取间隔秒（≥900 即至少 15 分钟，缺省每天）' },
         id: { type: 'string', description: '订阅 id（remove/pause/resume/run 必填，来自 list）' },
       },
       required: ['action'],

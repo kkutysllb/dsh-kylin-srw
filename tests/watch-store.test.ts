@@ -96,7 +96,7 @@ test('watch：坏 JSON 抛 INVALID 不清空', async () => {
 test('watch：入参校验——query 空 / every<900 / source 非法 / slug 非法全拒', () => {
   assert.throws(() => validateWatchInput({ project: 'p', source: 'arxiv', query: '  ' }), /query/)
   assert.throws(() => validateWatchInput({ project: 'p', source: 'arxiv', query: 'x', everySeconds: 60 }), /900/)
-  assert.throws(() => validateWatchInput({ project: 'p', source: 'arxiv', query: 'x', everySeconds: 604_800 }), /86400|15 分钟/, '宿主自动化任务上限 1 天（每周报错）')
+  assert.equal(validateWatchInput({ project: 'p', source: 'arxiv', query: 'x', everySeconds: 604_800 }).everySeconds, 604_800, '每周订阅合法（宿主仅限 ≥60）')
   assert.throws(() => validateWatchInput({ project: 'p', source: 'semantic-scholar', query: 'x' }), /source/)
   assert.throws(() => validateWatchInput({ project: 'Bad Slug', source: 'arxiv', query: 'x' }), /slug/)
   const okInput = validateWatchInput({ project: 'p', source: 'crossref', query: 'x', everySeconds: 'junk' })

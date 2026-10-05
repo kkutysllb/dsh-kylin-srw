@@ -2,11 +2,9 @@
  * 时钟任务本体归宿主「自动化任务」（ctx.schedule，0204 §1 修订版），
  * 这里只存订阅本体与绑定 id——不复制宿主时钟字段。 */
 export declare const WATCH_SCHEMA_VERSION = 1;
-/** 频率地板：宿主 every≥60 之上再收紧——文献抓取没意义更频，且礼貌限速。
- * 顶=86400（宿主自动化任务 create 校验 every_seconds ≤1 天，3091 实测
- * 「must be an integer 1..86400」）；周级订阅应在宿主自动化页改 cron。 */
+/** 频率地板：宿主 schedule 仅限 every≥60（domain.ts MIN_EVERY_INTERVAL_SECONDS），
+ * 这里再收紧——文献抓取没意义更频，且礼貌限速。无上限（周/双周订阅合法）。 */
 export declare const WATCH_EVERY_FLOOR = 900;
-export declare const WATCH_EVERY_CEIL = 86400;
 export declare const WATCH_SOURCES: readonly ["arxiv", "openalex", "crossref"];
 export type WatchSource = (typeof WATCH_SOURCES)[number];
 /** 一次运行的结果（面板可见性全靠它：失败可见 → 手动 run 或下个周期重试）。 */

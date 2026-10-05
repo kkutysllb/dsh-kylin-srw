@@ -712,6 +712,7 @@ export function WorkbenchView({ ctx }: { readonly ctx: ClientContext }): React.R
             <option value={900}>每 15 分钟</option>
             <option value={3600}>每小时</option>
             <option value={86400}>每天</option>
+            <option value={604800}>每周</option>
           </select>
           <input
             className='srw-input'
