@@ -265,6 +265,7 @@ export class LiteratureService {
     added: number
     duplicates: number
     retracted: string[]
+    corrigendum: string[]
     enriched: string[]
   }> {
     const slug = assertProject(project)
@@ -275,6 +276,7 @@ export class LiteratureService {
     const store = this.store(slug)
     const result = await store.upsert(slug, candidates)
     const retracted: string[] = []
+    const corrigendum: string[] = []
     if (candidates.length > 0 && !this.offline()) {
       for (const item of Object.values(result.doc.entries)) {
         const doi = item.identity.doi
@@ -286,11 +288,15 @@ export class LiteratureService {
           if (state === 'retracted') {
             await store.updateEntry(slug, item.key, entry => ({ ...entry, status: 'retracted' }))
             retracted.push(item.key)
+          } else if (state === 'corrigendum' && item.notice !== 'corrigendum') {
+            // 勘误≠撤稿：不标红不阻断，只挂通知（0204 3.6）
+            await store.updateEntry(slug, item.key, entry => ({ ...entry, notice: 'corrigendum' }))
+            corrigendum.push(item.key)
           }
         } catch { /* 撤稿核查失败不阻断入库 */ }
       }
     }
-    return { added: result.added, duplicates: result.duplicates, retracted, enriched }
+    return { added: result.added, duplicates: result.duplicates, retracted, corrigendum, enriched }
   }
 
   /** 按 DOI 直取元数据（校验真伪）。 */

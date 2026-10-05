@@ -46,6 +46,7 @@ export declare class LiteratureService {
         added: number;
         duplicates: number;
         retracted: string[];
+        corrigendum: string[];
         enriched: string[];
     }>;
     /** 按 DOI 直取元数据（校验真伪）。 */

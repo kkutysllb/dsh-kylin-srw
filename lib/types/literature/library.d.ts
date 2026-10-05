@@ -29,6 +29,9 @@ export interface LitEntry {
         readonly bytes: number;
     };
     readonly citedByCount?: number;
+    /** 勘误/更新通知（0204 3.6：Crossref is-update-of / corrigendum——
+     * 不是撤稿不标红；旧文档无此字段照读）。 */
+    readonly notice?: 'corrigendum';
 }
 export interface LibraryDoc {
     readonly schemaVersion: typeof LIBRARY_VERSION;
