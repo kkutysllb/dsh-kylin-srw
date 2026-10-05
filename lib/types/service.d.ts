@@ -103,8 +103,9 @@ export declare class SrwService {
         contained: boolean;
         detail?: string;
     }>;
-    /** 宿主 schedule 服务面（E3 边界试验专用；经 ctx.get 动态取，不进 inject
-     * 名单——避免缺名导致激活失败）。M3 正式接入时再按 ADR-8 定稿。 */
+    /** 宿主 schedule 服务面（不进 inject 名单——宿主可能缺名，避免激活失败）。
+     * Cordis 对未注入服务的**属性访问直接抛错**（3091 活体踩中），必须 try/catch
+     * 包住读面，缺席归一 NO_PROVIDER（绑定层降级为「未排程」）。 */
     private schedule;
     /** E3-A/B：创建提醒（恰一个 selector）。 */
     scheduleCreate(input: {

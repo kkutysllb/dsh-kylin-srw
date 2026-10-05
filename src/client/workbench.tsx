@@ -749,10 +749,17 @@ export function WorkbenchView({ ctx }: { readonly ctx: ClientContext }): React.R
                 </div>
                 <div className='srw-actions'>
                   <button className='srw-btn' disabled={watchBusy} onClick={() => { void watchAction('run', subItem.id) }}>立即抓取</button>
-                  {subItem.enabled ? (
-                    <button className='srw-btn' disabled={watchBusy} onClick={() => { void watchAction('pause', subItem.id) }}>暂停</button>
+                  {!subItem.enabled || subItem.scheduleId === undefined ? (
+                    <button
+                      className='srw-btn'
+                      disabled={watchBusy}
+                      title='向宿主「自动化任务」注册/重建时钟任务'
+                      onClick={() => { void watchAction('resume', subItem.id) }}
+                    >
+                      {subItem.enabled ? '补排程' : '恢复'}
+                    </button>
                   ) : (
-                    <button className='srw-btn' disabled={watchBusy} onClick={() => { void watchAction('resume', subItem.id) }}>恢复</button>
+                    <button className='srw-btn' disabled={watchBusy} onClick={() => { void watchAction('pause', subItem.id) }}>暂停</button>
                   )}
                   <button
                     className={`srw-btn ${confirmingWatchId === subItem.id ? 'danger-confirm' : 'danger'}`}

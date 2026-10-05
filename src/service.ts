@@ -256,14 +256,20 @@ export class SrwService {
     }
   }
 
-  /** 宿主 schedule 服务面（E3 边界试验专用；经 ctx.get 动态取，不进 inject
-   * 名单——避免缺名导致激活失败）。M3 正式接入时再按 ADR-8 定稿。 */
+  /** 宿主 schedule 服务面（不进 inject 名单——宿主可能缺名，避免激活失败）。
+   * Cordis 对未注入服务的**属性访问直接抛错**（3091 活体踩中），必须 try/catch
+   * 包住读面，缺席归一 NO_PROVIDER（绑定层降级为「未排程」）。 */
   private schedule(): Record<string, (...args: unknown[]) => unknown> {
-    const schedule = (this.ctx as Record<string, unknown>)['schedule'] as Record<string, (...args: unknown[]) => unknown> | undefined
-    if (schedule === undefined) {
-      throw new ServiceError('NO_PROVIDER', '宿主 schedule 服务缺席（ctx.get 未取到；宿主或 profile 未挂载）')
+    let schedule: unknown
+    try {
+      schedule = (this.ctx as Record<string, unknown>)['schedule']
+    } catch (error: unknown) {
+      throw new ServiceError('NO_PROVIDER', `宿主 schedule 服务不可注入（${error instanceof Error ? error.message : String(error)}）`)
     }
-    return schedule
+    if (schedule === undefined || schedule === null || typeof schedule !== 'object') {
+      throw new ServiceError('NO_PROVIDER', '宿主 schedule 服务缺席（本 profile 未挂载自动化任务；时钟绑定不可用，订阅仍可手动 run）')
+    }
+    return schedule as Record<string, (...args: unknown[]) => unknown>
   }
 
   /** E3-A/B：创建提醒（恰一个 selector）。 */
