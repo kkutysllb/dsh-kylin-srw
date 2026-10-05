@@ -171,11 +171,28 @@ export class SrwService {
     capsTotal: number
     version: string
     offlineMode: boolean
+    watchSummary?: { total: number; enabled: number; lastFresh?: number; lastError?: string }
   }> {
     const projects = await this.workspace.list()
     const caps = collectCaps(this.ctx)
     const global = this.indexGlobal()
     const stage = this.activeStage()
+    type WatchSummary = { total: number; enabled: number; lastFresh?: number; lastError?: string }
+    let watchSummary: WatchSummary | undefined
+    try {
+      const subs = await this.watch.list()
+      const enabled = subs.filter(item => item.enabled)
+      const withResult = [...subs].filter(item => item.lastResult !== undefined)
+        .sort((a, b) => (b.lastResult?.at ?? '').localeCompare(a.lastResult?.at ?? ''))
+      const lastOk = withResult.find(item => item.lastResult?.kind === 'ok')
+      const lastError = withResult.find(item => item.lastResult?.kind === 'error')
+      watchSummary = {
+        total: subs.length,
+        enabled: enabled.length,
+        ...(lastOk?.lastResult?.kind === 'ok' ? { lastFresh: lastOk.lastResult.fresh } : {}),
+        ...(lastError?.lastResult?.kind === 'error' ? { lastError: lastError.lastResult.error } : {}),
+      }
+    } catch { /* 无根/读失败：订阅摘要缺席不炸 overview */ }
     return {
       rootDir: this.currentRoot() ?? '',
       projectCount: projects.length,
@@ -185,7 +202,21 @@ export class SrwService {
       capsTotal: caps.length,
       version: SRW_VERSION,
       offlineMode: this.config.offlineMode === true,
+      ...(watchSummary !== undefined ? { watchSummary } : {}),
     }
+  }
+
+  /** 面板建订阅时的默认绑定会话：最新根 agent 的会话（拿不到则不绑）。 */
+  newestRootSessionId(): string | undefined {
+    const agents = (this.ctx as Record<string, unknown>)['agents'] as
+      | { roots?: () => readonly unknown[] }
+      | undefined
+    if (agents?.roots === undefined) return undefined
+    for (const root of [...agents.roots()].reverse()) {
+      const sessionId = (root as { session?: { id?: unknown } } | undefined)?.session?.id
+      if (typeof sessionId === 'string' && sessionId !== '') return sessionId
+    }
+    return undefined
   }
 
   /** 轻量探活（`diag.ping` 端点）。 */

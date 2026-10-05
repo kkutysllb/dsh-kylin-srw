@@ -78,7 +78,15 @@ export declare class SrwService {
         capsTotal: number;
         version: string;
         offlineMode: boolean;
+        watchSummary?: {
+            total: number;
+            enabled: number;
+            lastFresh?: number;
+            lastError?: string;
+        };
     }>;
+    /** 面板建订阅时的默认绑定会话：最新根 agent 的会话（拿不到则不绑）。 */
+    newestRootSessionId(): string | undefined;
     /** 轻量探活（`diag.ping` 端点）。 */
     ping(): {
         readonly pong: true;

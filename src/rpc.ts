@@ -307,6 +307,41 @@ export async function handleSrwRpc(
       }
       case 'diag.schedule.storage':
         return ok({ path: service.scheduleStoragePath() })
+      // ── M3 订阅抓取（0204）：触发绑内置自动化任务，执行是 host 代码 ──
+      case 'watch.list':
+        return ok(await service.watch.list())
+      case 'watch.create': {
+        const body = record(payload)
+        const everySeconds = optNumber(body, 'everySeconds')
+        // 面板创建：不显式带会话 → 绑最新根会话（没有则未排程，面板明示）
+        const sessionId = typeof body['sessionId'] === 'string' && body['sessionId'] !== ''
+          ? body['sessionId']
+          : service.newestRootSessionId()
+        return ok(await service.watch.create({
+          project: body['project'],
+          source: body['source'],
+          query: body['query'],
+          everySeconds,
+        }, sessionId))
+      }
+      case 'watch.remove': {
+        const body = record(payload)
+        await service.watch.remove(reqString(body, 'id'))
+        return ok({ removed: true })
+      }
+      case 'watch.pause': {
+        const body = record(payload)
+        return ok(await service.watch.pause(reqString(body, 'id')))
+      }
+      case 'watch.resume': {
+        const body = record(payload)
+        const sessionId = optString(body, 'sessionId')
+        return ok(await service.watch.resume(reqString(body, 'id'), sessionId))
+      }
+      case 'watch.run': {
+        const body = record(payload)
+        return ok(await service.watch.run(reqString(body, 'id')))
+      }
       default:
         return fail('not-found', `unknown endpoint ${JSON.stringify(endpoint)}`)
     }

@@ -55,6 +55,20 @@ interface OverviewLite {
   readonly capsTotal: number
   readonly version: string
   readonly offlineMode: boolean
+  readonly watchSummary?: { readonly total: number; readonly enabled: number; readonly lastFresh?: number; readonly lastError?: string }
+}
+
+interface WatchSubLite {
+  readonly id: string
+  readonly project: string
+  readonly source: string
+  readonly query: string
+  readonly everySeconds: number
+  readonly enabled: boolean
+  readonly boundSessionId?: string
+  readonly scheduleId?: string
+  readonly lastRunAt?: string
+  readonly lastResult?: { readonly at: string; readonly kind: string; readonly fresh?: number; readonly error?: string }
 }
 
 async function rpc<T>(ctx: ClientContext, endpoint: string, payload?: unknown): Promise<T> {
@@ -98,6 +112,13 @@ export function WorkbenchView({ ctx }: { readonly ctx: ClientContext }): React.R
   const [libEntries, setLibEntries] = useState<readonly LibEntryLite[]>([])
   const [litBusy, setLitBusy] = useState(false)
   const [litNotice, setLitNotice] = useState<string | null>(null)
+  const [watchSubs, setWatchSubs] = useState<readonly WatchSubLite[]>([])
+  const [watchSource, setWatchSource] = useState<'arxiv' | 'openalex' | 'crossref'>('arxiv')
+  const [watchQuery, setWatchQuery] = useState('')
+  const [watchEvery, setWatchEvery] = useState(86_400)
+  const [watchBusy, setWatchBusy] = useState(false)
+  const [watchNotice, setWatchNotice] = useState<string | null>(null)
+  const [confirmingWatchId, setConfirmingWatchId] = useState<string | null>(null)
   const alive = useRef(true)
   const confirmTimer = useRef<number | undefined>(undefined)
 
@@ -114,6 +135,58 @@ export function WorkbenchView({ ctx }: { readonly ctx: ClientContext }): React.R
       if (alive.current) setError(String(cause))
     }
   }, [ctx])
+
+  /* ── 订阅抓取（M3）：触发绑内置「自动化任务」，执行是 host 代码 ── */
+  const refreshWatch = useCallback(async (): Promise<void> => {
+    try {
+      const subs = await rpc<readonly WatchSubLite[]>(ctx, 'watch.list')
+      if (alive.current) setWatchSubs(subs)
+    } catch { /* 无根等场景：卡片显示空表即可 */ }
+  }, [ctx])
+
+  const watchCreate = async (): Promise<void> => {
+    const project = overview?.activeProject ?? ''
+    if (project === '') { setWatchNotice('先创建/打开一个项目再订阅'); return }
+    if (watchQuery.trim() === '') { setWatchNotice('检索词不能为空'); return }
+    setWatchBusy(true)
+    try {
+      const result = await rpc<{ scheduled: boolean; hint?: string }>(ctx, 'watch.create', {
+        project, source: watchSource, query: watchQuery, everySeconds: watchEvery,
+      })
+      setWatchQuery('')
+      setWatchNotice(result.scheduled === true
+        ? '已订阅：时钟任务已写入宿主「自动化任务」页（到期自动抓取入库）'
+        : `已订阅但未排程：${result.hint ?? ''}`)
+      await refreshWatch()
+    } catch (cause) {
+      setWatchNotice(`订阅失败：${String(cause)}`)
+    } finally {
+      if (alive.current) setWatchBusy(false)
+    }
+  }
+
+  const watchAction = async (action: 'pause' | 'resume' | 'remove' | 'run', id: string): Promise<void> => {
+    setWatchBusy(true)
+    try {
+      if (action === 'run') {
+        const result = await rpc<{ fresh: number }>(ctx, 'watch.run', { id })
+        setWatchNotice(`抓取完成：新增 ${result.fresh} 条`)
+      } else if (action === 'remove') {
+        await rpc(ctx, 'watch.remove', { id })
+        setWatchNotice('订阅已删除（时钟任务同步移除）')
+      } else {
+        const result = await rpc<{ scheduled?: boolean; hint?: string; sub?: WatchSubLite }>(ctx, `watch.${action}`, { id })
+        setWatchNotice(action === 'pause'
+          ? '已暂停（时钟任务已移除，订阅保留）'
+          : (result.scheduled === true ? '已恢复：时钟任务已重建' : `已恢复但未排程：${result.hint ?? ''}`))
+      }
+      await refreshWatch()
+    } catch (cause) {
+      setWatchNotice(`操作失败：${String(cause)}`)
+    } finally {
+      if (alive.current) setWatchBusy(false)
+    }
+  }
 
   /* 5s 轮询 overview；页面隐藏时暂停（0102 §9.2 面板纪律）。 */
   useEffect(() => {
@@ -134,6 +207,7 @@ export function WorkbenchView({ ctx }: { readonly ctx: ClientContext }): React.R
     // 项目列表首载：overview 只有计数，列表需单独 root.get（此前只在
     // 增删后刷新——页面重载后列表空、计数非零的不一致已修）。
     void refreshProjects()
+    void refreshWatch()
     timer = window.setInterval(() => { void poll() }, 5000)
     const onVisible = (): void => { if (document.visibilityState === 'visible') void poll() }
     document.addEventListener('visibilitychange', onVisible)
@@ -141,7 +215,7 @@ export function WorkbenchView({ ctx }: { readonly ctx: ClientContext }): React.R
       if (timer !== undefined) window.clearInterval(timer)
       document.removeEventListener('visibilitychange', onVisible)
     }
-  }, [ctx, refreshProjects])
+  }, [ctx, refreshProjects, refreshWatch])
 
   /* 引擎工作区口径（S1 判据数据源）：快照读取，不订阅（轮询时顺带刷新）。 */
   useEffect(() => {
@@ -169,7 +243,7 @@ export function WorkbenchView({ ctx }: { readonly ctx: ClientContext }): React.R
     } finally {
       if (alive.current) setBusy(false)
     }
-  }, [ctx, refreshProjects])
+  }, [ctx, refreshProjects, refreshWatch])
 
   /** 选根：native 对话框弹在宿主屏幕（用户已实测可用）；browse 后端（无头/
    * SSH 启动）也走同一 pickDirectory，由宿主 auto 选择交互。8s 超时只是
@@ -614,6 +688,93 @@ export function WorkbenchView({ ctx }: { readonly ctx: ClientContext }): React.R
             </ul>
           </>
         ) : null}
+      </div>
+
+      <div className='srw-card'>
+        <h2>订阅抓取{overview?.watchSummary !== undefined && overview.watchSummary.total > 0 ? `（启用 ${overview.watchSummary.enabled}/${overview.watchSummary.total}）` : ''}</h2>
+        <p className='srw-detail'>到期由宿主「自动化任务」唤醒会话自动检索入库（幂等去重）；时钟任务可在宿主自动化页调整。</p>
+        {watchNotice !== null ? <p className='srw-detail'>{watchNotice}</p> : null}
+        <div className='srw-actions'>
+          <select
+            className='srw-input'
+            value={watchSource}
+            onChange={event => { setWatchSource(event.target.value as typeof watchSource) }}
+          >
+            <option value='arxiv'>arXiv</option>
+            <option value='openalex'>OpenAlex</option>
+            <option value='crossref'>Crossref</option>
+          </select>
+          <select
+            className='srw-input'
+            value={watchEvery}
+            onChange={event => { setWatchEvery(Number(event.target.value)) }}
+          >
+            <option value={900}>每 15 分钟</option>
+            <option value={3600}>每小时</option>
+            <option value={86400}>每天</option>
+            <option value={604800}>每周</option>
+          </select>
+          <input
+            className='srw-input'
+            placeholder='检索词（如 ti:"peer review"）'
+            value={watchQuery}
+            onChange={event => { setWatchQuery(event.target.value) }}
+          />
+          <button
+            className='srw-btn'
+            disabled={watchBusy || overview?.activeProject === '' || overview?.activeProject === undefined}
+            onClick={() => { void watchCreate() }}
+          >
+            订阅当前项目
+          </button>
+        </div>
+        {watchSubs.length > 0 ? (
+          <ul className='srw-list'>
+            {watchSubs.map(subItem => (
+              <li key={subItem.id} className='srw-item'>
+                <div>
+                  <strong>{subItem.source}</strong> <code>{subItem.query}</code>
+                  <span className='srw-detail'> → 项目 {subItem.project}</span>
+                </div>
+                <div className='srw-project-meta'>
+                  <span>{subItem.enabled ? (subItem.scheduleId !== undefined ? '已排程' : '未排程') : '已暂停'}</span>
+                  <span>·</span>
+                  <span>
+                    {subItem.lastResult === undefined
+                      ? '尚未运行'
+                      : subItem.lastResult.kind === 'ok'
+                        ? `上次新增 ${subItem.lastResult.fresh ?? 0} 条`
+                        : `上次错误：${subItem.lastResult.error ?? ''}`}
+                  </span>
+                </div>
+                <div className='srw-actions'>
+                  <button className='srw-btn' disabled={watchBusy} onClick={() => { void watchAction('run', subItem.id) }}>立即抓取</button>
+                  {subItem.enabled ? (
+                    <button className='srw-btn' disabled={watchBusy} onClick={() => { void watchAction('pause', subItem.id) }}>暂停</button>
+                  ) : (
+                    <button className='srw-btn' disabled={watchBusy} onClick={() => { void watchAction('resume', subItem.id) }}>恢复</button>
+                  )}
+                  <button
+                    className={`srw-btn ${confirmingWatchId === subItem.id ? 'danger-confirm' : 'danger'}`}
+                    disabled={watchBusy}
+                    onClick={() => {
+                      if (confirmingWatchId === subItem.id) {
+                        setConfirmingWatchId(null)
+                        void watchAction('remove', subItem.id)
+                      } else {
+                        setConfirmingWatchId(subItem.id)
+                      }
+                    }}
+                  >
+                    {confirmingWatchId === subItem.id ? '确认删除？' : '删除'}
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className='srw-detail'>暂无订阅。检索词写法与「文献」卡一致（ti:/abs:/au: 前缀可选）；到点自动抓取进当前项目库。</p>
+        )}
       </div>
 
       {activeStage !== undefined ? (
