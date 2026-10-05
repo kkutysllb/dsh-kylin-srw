@@ -22,7 +22,7 @@
 | [0201 实施计划](docs/02-plan/0201-实施计划.md) | 执行约定；M0–M8 里程碑（目标/任务/文件/验收/DoD/粗估）；M0 的 bite-sized 详细任务；`pnpm` 质量门与验证矩阵；7 个端到端验收场景；发布与分发链；风险登记；工时总表（75–114 人日）；**附二：宿主事实核对对计划的逐条影响**；**附三：M0 实测回改（8 条）** |
 | [0202 M1 详细计划](docs/02-plan/0202-M1-工作区与项目.md) | Task 1.0–1.7 bite-sized（注入面验证矩阵 / root.json + settings.section 转正 / workspace 模块 / srw_index v1 / R2 端点 / 工作台视图 / srw_project 工具）；M1 验收 7 断言；settings.register 走 V15 后置的决策记录 |
 | [0203 M2 详细计划](docs/02-plan/0203-M2-文献通路.md) | RateGate / 三源适配 / 去重 / library.json / PDF+SSRF / BibTeX / 撤稿 / 文献视图+工具；**已完成**，文末「M2 实施实录」含 9 条真网/实测勘误（含 lossless 工具输出、元数据自愈、跨源身份折叠） |
-| [0204 M3 计划](docs/02-plan/0204-M3-定期抓取.md) | at-most-once 时钟 / 订阅存储(.srw/watch.json) / 抓取作业 / srw_watch 工具 / B 车道派发 / 撤稿类型区分；**进行中** |
+| [0204 M3 计划](docs/02-plan/0204-M3-定期抓取.md) | 订阅抓取（触发绑宿主内置「自动化任务」ctx.schedule，执行=host 确定性代码）/ .srw/watch.json / srw_watch 工具 / 撤稿类型区分（corrigendum≠retraction）；**已完成**，文末「M3 实施实录」含 Cordis 围栏等 3 条勘误 |
 
 ## 定位（一句话）
 
