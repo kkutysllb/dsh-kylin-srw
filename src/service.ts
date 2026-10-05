@@ -12,6 +12,7 @@ import { WorkspaceStore } from './workspace/project.ts'
 import { readRootConfig, writeRootConfig } from './workspace/root.ts'
 import { openSrwIndex, type SrwIndexDomain, type SrwIndexGlobal } from './store.ts'
 import { attachLiterature, type LiteratureService } from './literature/service.ts'
+import { attachWatch, type WatchManager } from './watch/binding.ts'
 /** 与 package.json 同步维护；diag.caps 的 info.version 数据源。 */
 export const SRW_VERSION = '0.0.1'
 
@@ -63,6 +64,13 @@ export class SrwService {
   get literature(): LiteratureService {
     if (this.literatureRef === undefined) this.literatureRef = attachLiterature(this)
     return this.literatureRef
+  }
+
+  private watchRef: WatchManager | undefined
+  /** 订阅抓取（M3：触发绑内置自动化任务 ctx.schedule，执行是本插件 host 代码）。 */
+  get watch(): WatchManager {
+    if (this.watchRef === undefined) this.watchRef = attachWatch(this, () => this.literature)
+    return this.watchRef
   }
 
   static async open(ctx: unknown, rawConfig: SrwConfig): Promise<SrwService> {
