@@ -260,16 +260,22 @@ export class SrwService {
    * Cordis 对未注入服务的**属性访问直接抛错**（3091 活体踩中），必须 try/catch
    * 包住读面，缺席归一 NO_PROVIDER（绑定层降级为「未排程」）。 */
   private schedule(): Record<string, (...args: unknown[]) => unknown> {
-    let schedule: unknown
+    // 两级读法：① 属性访问（服务在 inject 名单里时的正路）；②
+    // ctx.reflect.get —— vendored cordis 的全局注册表读法，绕过
+    // 「未 inject 属性访问直接抛错」的围栏（3091 活体：@qilin/schedule
+    // 经 bundle 提供，但第三方 patch 行插件拿不到祖先链合法读）。
     try {
-      schedule = (this.ctx as Record<string, unknown>)['schedule']
-    } catch (error: unknown) {
-      throw new ServiceError('NO_PROVIDER', `宿主 schedule 服务不可注入（${error instanceof Error ? error.message : String(error)}）`)
+      const direct = (this.ctx as Record<string, unknown>)['schedule']
+      if (direct !== undefined && direct !== null && typeof direct === 'object') {
+        return direct as Record<string, (...args: unknown[]) => unknown>
+      }
+    } catch { /* 围栏拦下，走 reflect */ }
+    const reflect = (this.ctx as { reflect?: { get?: (name: string, strict?: boolean) => unknown } }).reflect
+    const viaReflect = reflect?.get?.('schedule')
+    if (viaReflect !== undefined && viaReflect !== null && typeof viaReflect === 'object') {
+      return viaReflect as Record<string, (...args: unknown[]) => unknown>
     }
-    if (schedule === undefined || schedule === null || typeof schedule !== 'object') {
-      throw new ServiceError('NO_PROVIDER', '宿主 schedule 服务缺席（本 profile 未挂载自动化任务；时钟绑定不可用，订阅仍可手动 run）')
-    }
-    return schedule as Record<string, (...args: unknown[]) => unknown>
+    throw new ServiceError('NO_PROVIDER', '宿主 schedule 服务缺席（本 profile 未挂载自动化任务 bundle；时钟绑定不可用，订阅仍可手动 run）')
   }
 
   /** E3-A/B：创建提醒（恰一个 selector）。 */
