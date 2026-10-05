@@ -10,6 +10,7 @@ import type { ProjectMeta } from './core/schema.ts';
 import type { LitCandidate } from './literature/types.ts';
 export declare const SRW_TOOL_NAME = "srw_project";
 export declare const SRW_LIT_TOOL_NAME = "srw_literature";
+export declare const SRW_WATCH_TOOL_NAME = "srw_watch";
 /** 需要人工审批的动作（list/open/lib/search/bibtex 豁免）。 */
 export declare const SRW_ASK_ACTIONS: ReadonlySet<string>;
 export declare const SRW_LIT_ASK_ACTIONS: ReadonlySet<string>;
@@ -62,4 +63,25 @@ export declare function searchOutputFor(items: readonly LitCandidate[]): {
     readonly items: readonly unknown[];
 };
 /** `srw_literature` 四动作工具定义（search/lib 豁免；import/pdf 需 ask）。 */
+/** 订阅单行摘要（模型面向，有界；可选字段条件展开守无损）。 */
+export declare function watchSummaryFor(sub: {
+    id: string;
+    project: string;
+    source: string;
+    query: string;
+    everySeconds: number;
+    enabled: boolean;
+    boundSessionId?: string;
+    scheduleId?: string;
+    lastRunAt?: string;
+    lastResult?: {
+        at: string;
+        kind: string;
+        fresh?: number;
+        error?: string;
+    };
+}): Record<string, unknown>;
+/** `srw_watch` 工具：订阅抓取管理。list/run/pause/resume 豁免（run 的授权
+ * 发生在 create 审批时——时钟唤醒轮必须免问）；create/remove ask。 */
+export declare function srwWatchToolDef(service: SrwService): SrwToolDef;
 export declare function srwLiteratureToolDef(service: SrwService): SrwToolDef;

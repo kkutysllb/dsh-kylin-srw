@@ -7,9 +7,10 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as nodePath from 'node:path'
 import { readFileSync, existsSync } from 'node:fs'
-import { approvalDecision, callerFrom, srwProjectToolDef, srwLiteratureToolDef, searchOutputFor, SRW_TOOL_NAME, SRW_LIT_TOOL_NAME } from '../src/tools.ts'
+import { approvalDecision, callerFrom, srwProjectToolDef, srwLiteratureToolDef, srwWatchToolDef, searchOutputFor, SRW_TOOL_NAME, SRW_LIT_TOOL_NAME, SRW_WATCH_TOOL_NAME } from '../src/tools.ts'
 import { stripFrontmatter, registerBundledSkills, type SrwSkillsService } from '../src/skills.ts'
 import { SrwService } from '../src/service.ts'
+import { WatchManager } from '../src/watch/binding.ts'
 
 const exec = (name: string, args?: unknown) => ({ name, arguments: args, signal: new AbortController().signal })
 
@@ -191,5 +192,111 @@ test('tools：全动作输出无损——离线 fake 下 search 报 OFFLINE、li
     await service.dispose()
   } finally {
     await rm(root, { recursive: true, force: true })
+  }
+})
+
+/** watch fake：注入 WatchManager 依赖（时钟 + 文献都在测试手里）。 */
+async function watchHarness(options: { fresh?: number[] } = {}): Promise<{
+  manager: WatchManager
+  tasks: { id: string; sessionId: string; title: string; prompt: string; everySeconds: number }[]
+  runLog: string[]
+  root: string
+}> {
+  const tasks: { id: string; sessionId: string; title: string; prompt: string; everySeconds: number }[] = []
+  let seq = 0
+  const runLog: string[] = []
+  const root = await mkdtemp(join(tmpdir(), 'srw-watch-tool-'))
+  const manager = new WatchManager({
+    fs: {
+      resolve: (rel: string, opts?: { cwd?: string }) => ({ key: nodePath.resolve(opts?.cwd ?? process.cwd(), rel) }),
+      contains: (parent: { key: string }, child: { key: string }) => {
+        const p = nodePath.resolve(parent.key)
+        const c = nodePath.resolve(child.key)
+        return c === p || c.startsWith(`${p}/`)
+      },
+    },
+    rootDir: () => root,
+    offlineMode: () => false,
+    schedule: {
+      create: async (sessionId, request) => {
+        seq += 1
+        const task = { id: `task-${seq}`, sessionId, title: String(request['title'] ?? ''), prompt: String(request['prompt'] ?? ''), everySeconds: typeof request['every_seconds'] === 'number' ? request['every_seconds'] : 0 }
+        tasks.push(task)
+        return { id: task.id }
+      },
+      remove: async input => {
+        const index = tasks.findIndex(task => task.id === input.id)
+        if (index === -1) throw new Error(`no task ${input.id}`)
+        tasks.splice(index, 1)
+      },
+    },
+    literature: () => ({
+      search: async (source, query) => { runLog.push(`${source}:${query}`); return [{ source, identity: { title: `p-${runLog.length}`, year: 2026 }, authors: ['A'], venue: 'arXiv', abstract: 'x' }] },
+      importEntries: async () => ({ added: options.fresh?.[runLog.length - 1] ?? 1, duplicates: 0, retracted: [], enriched: [] }),
+    }),
+  })
+  return { manager, tasks, runLog, root }
+}
+
+test('srw_watch 工具：审批矩阵——create/remove 问，run/pause/resume/list 豁免', () => {
+  const mounted = true
+  for (const action of ['create', 'remove']) {
+    const decision = approvalDecision({ name: SRW_WATCH_TOOL_NAME, arguments: { action } }, mounted)
+    assert.equal(decision?.kind, 'ask', `${action} 应 ask`)
+  }
+  for (const action of ['list', 'run', 'pause', 'resume']) {
+    const decision = approvalDecision({ name: SRW_WATCH_TOOL_NAME, arguments: { action } }, mounted)
+    assert.equal(decision, undefined, `${action} 应豁免（run 授权在建订阅时给过）`)
+  }
+  assert.equal(approvalDecision({ name: SRW_WATCH_TOOL_NAME, arguments: { action: 'create' } }, false), undefined, '未挂载不问')
+})
+
+test('srw_watch 工具：create（绑会话+时钟落任务）→ list → run 幂等 → pause/resume → remove 双删；输出全程无损', async () => {
+  const harness = await watchHarness({ fresh: [2, 0] })
+  try {
+  // 直接构造带 watch 的 service 替身：工具只调 service.watch 与 callerFrom
+  const serviceStub = { watch: harness.manager } as unknown as SrwService
+  const def = srwWatchToolDef(serviceStub)
+  const exec = { agent: { session: { id: 'sess-77', header: { cwd: harness.root } } } }
+  const run = (args: Record<string, unknown>) => def.execute(args, exec) as Promise<{ ok: boolean; value?: Record<string, unknown>; error?: { code: string; message: string; details: object } }>
+  const created = await run({ action: 'create', project: 'review', source: 'openalex', query: 'peer review', everySeconds: 3600 })
+  assert.equal(created.ok, true)
+  assert.equal(created.value?.scheduled, true)
+  assert.equal(typeof created.value?.id, 'string')
+  assertLossless(created)
+  const id = String(created.value?.id)
+  assert.equal(harness.tasks.length, 1)
+  assert.equal(harness.tasks[0]?.sessionId, 'sess-77')
+  assert.equal(harness.tasks[0]?.everySeconds, 3600)
+
+  const listed = await run({ action: 'list' })
+  assert.equal(listed.ok, true)
+  assert.equal(listed.value?.count, 1)
+  assertLossless(listed)
+
+  const firstRun = await run({ action: 'run', id })
+  assert.equal(firstRun.value?.fresh, 2)
+  const secondRun = await run({ action: 'run', id })
+  assert.equal(secondRun.value?.fresh, 0, '重复 run 幂等')
+  assertLossless(secondRun)
+
+  const paused = await run({ action: 'pause', id })
+  assert.equal(paused.value?.paused, true)
+  assert.equal(harness.tasks.length, 0, '暂停删时钟任务')
+  const resumed = await run({ action: 'resume', id })
+  assert.equal(resumed.value?.scheduled, true)
+  assert.equal(harness.tasks.length, 1, '恢复重建时钟任务')
+
+  const removed = await run({ action: 'remove', id })
+  assert.equal(removed.value?.removed, true)
+  assert.equal(harness.tasks.length, 0, '删除双删')
+  assertLossless(removed)
+
+  const bad = await run({ action: 'run', id: 'sub-nope' })
+  assert.equal(bad.ok, false)
+  assert.equal(bad.error?.code, 'NOT_FOUND')
+  assertLossless(bad)
+  } finally {
+    await rm(harness.root, { recursive: true, force: true })
   }
 })

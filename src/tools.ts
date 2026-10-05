@@ -12,6 +12,7 @@ import type { LitCandidate } from './literature/types.ts'
 
 export const SRW_TOOL_NAME = 'srw_project'
 export const SRW_LIT_TOOL_NAME = 'srw_literature'
+export const SRW_WATCH_TOOL_NAME = 'srw_watch'
 
 /** 需要人工审批的动作（list/open/lib/search/bibtex 豁免）。 */
 export const SRW_ASK_ACTIONS: ReadonlySet<string> = new Set(['create', 'remove'])
@@ -79,13 +80,39 @@ const TOOL_ASKS: ReadonlyMap<string, ReadonlyMap<string, ApprovalAsk>> = new Map
   ])],
 ])
 
+/** srw_watch 的 ask 动作：创建/删除订阅要问（授权周期性写库）；run/pause/
+ * resume/list 豁免——run 的授权发生在建订阅时，时钟唤醒轮再问必卡死。 */
+const WATCH_ASKS: ReadonlyMap<string, ApprovalAsk> = new Map([
+  ['create', {
+    reason: 'This creates a recurring subscription that will periodically fetch literature into the project library via the host scheduler.',
+    displayReason: {
+      en: 'This creates a recurring subscription that periodically fetches literature into the project library (registered with the host scheduler).',
+      zh: '此操作将创建周期订阅并注册到宿主自动化任务，到期自动向项目文献库入库。',
+    },
+  }],
+  ['remove', {
+    reason: 'This deletes the subscription and its host scheduler task.',
+    displayReason: {
+      en: 'This deletes the subscription and its scheduled task.',
+      zh: '此操作将删除订阅及其在宿主自动化任务里的时钟任务。',
+    },
+  }],
+])
+
+/** 全部工具的 ask 表（approvalDecision 统一查这里）。 */
+const ASK_TABLE: ReadonlyMap<string, ReadonlyMap<string, ApprovalAsk>> = new Map([
+  [SRW_TOOL_NAME, ASKS],
+  [SRW_LIT_TOOL_NAME, TOOL_ASKS.get(SRW_LIT_TOOL_NAME) ?? new Map()],
+  [SRW_WATCH_TOOL_NAME, WATCH_ASKS],
+])
+
 /** 纯函数审批判定（单测面）：非本插件工具 / 未挂载 / 非敏感动作 → undefined。 */
 export function approvalDecision(
   exec: { readonly name: string; readonly arguments?: unknown },
   mountedAgent: boolean,
 ): ({ readonly kind: 'ask' } & ApprovalAsk) | undefined {
   if (!mountedAgent) return undefined
-  const asks = exec.name === SRW_TOOL_NAME ? ASKS : exec.name === SRW_LIT_TOOL_NAME ? TOOL_ASKS.get(SRW_LIT_TOOL_NAME) : undefined
+  const asks = ASK_TABLE.get(exec.name)
   if (asks === undefined) return undefined
   const ask = asks.get(actionOf(exec.arguments))
   return ask === undefined ? undefined : { kind: 'ask', ...ask }
@@ -219,6 +246,134 @@ export function searchOutputFor(items: readonly LitCandidate[]): {
 }
 
 /** `srw_literature` 四动作工具定义（search/lib 豁免；import/pdf 需 ask）。 */
+/** 订阅单行摘要（模型面向，有界；可选字段条件展开守无损）。 */
+export function watchSummaryFor(sub: {
+  id: string
+  project: string
+  source: string
+  query: string
+  everySeconds: number
+  enabled: boolean
+  boundSessionId?: string
+  scheduleId?: string
+  lastRunAt?: string
+  lastResult?: { at: string; kind: string; fresh?: number; error?: string }
+}): Record<string, unknown> {
+  return {
+    id: sub.id,
+    project: sub.project,
+    source: sub.source,
+    query: sub.query,
+    everySeconds: sub.everySeconds,
+    enabled: sub.enabled,
+    scheduled: sub.scheduleId !== undefined,
+    ...(sub.boundSessionId !== undefined ? { boundSessionId: sub.boundSessionId } : {}),
+    ...(sub.lastRunAt !== undefined ? { lastRunAt: sub.lastRunAt } : {}),
+    ...(sub.lastResult !== undefined ? { lastResult: sub.lastResult } : {}),
+  }
+}
+
+/** `srw_watch` 工具：订阅抓取管理。list/run/pause/resume 豁免（run 的授权
+ * 发生在 create 审批时——时钟唤醒轮必须免问）；create/remove ask。 */
+export function srwWatchToolDef(service: SrwService): SrwToolDef {
+  const watch = (): SrwService['watch'] => service.watch
+  return {
+    name: SRW_WATCH_TOOL_NAME,
+    description: [
+      '文献订阅抓取（科研工作台）：按检索词定期自动入库到项目文献库；时钟用的是宿主内置「自动化任务」',
+      '（用户可在宿主页看到/修改对应任务）。list 列订阅；create 建订阅（需审批，自动注册时钟任务，',
+      '到期自动抓取并汇报）；run 立即抓一次（幂等，重复跑 0 新增）；pause/resume 暂停恢复；remove 删除（需审批）。',
+      '需要科研总根已设置；离线模式下 run 报 OFFLINE。',
+    ].join(''),
+    parameters: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['list', 'create', 'remove', 'pause', 'resume', 'run'], description: '要执行的动作' },
+        project: { type: 'string', description: 'create 的目标项目 slug' },
+        source: { type: 'string', enum: ['arxiv', 'openalex', 'crossref'], description: 'create 的检索源（缺省 arxiv）' },
+        query: { type: 'string', description: 'create 的检索词' },
+        everySeconds: { type: 'number', description: 'create 的抓取间隔秒（≥900，缺省每天）' },
+        id: { type: 'string', description: '订阅 id（remove/pause/resume/run 必填，来自 list）' },
+      },
+      required: ['action'],
+    },
+    output: { schema: { type: 'object' }, render: jsonRender },
+    timeoutMs: 120_000,
+    execute: async (args, exec) => {
+      const record = typeof args === 'object' && args !== null ? args as Record<string, unknown> : {}
+      try {
+        switch (record['action']) {
+          case 'list': {
+            const subs = await watch().list()
+            return { ok: true, value: { count: subs.length, hint: 'run 立即抓取（幂等）；create 建新订阅', subs: subs.map(watchSummaryFor) } }
+          }
+          case 'create': {
+            const everySeconds = typeof record['everySeconds'] === 'number' ? record['everySeconds'] : undefined
+            const caller = callerFrom(exec)
+            const result = await watch().create({
+              project: record['project'],
+              source: record['source'],
+              query: record['query'],
+              everySeconds,
+            }, caller.sessionId)
+            return {
+              ok: true,
+              value: {
+                id: result.sub.id,
+                scheduled: result.scheduled,
+                everySeconds: result.sub.everySeconds,
+                project: result.sub.project,
+                query: result.sub.query,
+                hint: '到点由宿主自动化任务唤醒当前会话自动抓取并汇报；pause/resume/remove 可管理',
+                ...(result.hint !== undefined ? { notice: result.hint } : {}),
+              },
+            }
+          }
+          case 'remove': {
+            await watch().remove(String(record['id'] ?? ''))
+            return { ok: true, value: { removed: true } }
+          }
+          case 'pause':
+            return { ok: true, value: { paused: true, sub: watchSummaryFor(await watch().pause(String(record['id'] ?? ''))) } }
+          case 'resume': {
+            const sessionId = typeof record['sessionId'] === 'string' && record['sessionId'] !== ''
+              ? record['sessionId']
+              : callerFrom(exec).sessionId
+            const result = await watch().resume(String(record['id'] ?? ''), sessionId)
+            return {
+              ok: true,
+              value: {
+                scheduled: result.scheduled,
+                sub: watchSummaryFor(result.sub),
+                ...(result.hint !== undefined ? { notice: result.hint } : {}),
+              },
+            }
+          }
+          case 'run': {
+            const result = await watch().run(String(record['id'] ?? ''))
+            return {
+              ok: true,
+              value: {
+                fresh: result.fresh,
+                duplicates: result.duplicates,
+                enriched: [...result.enriched],
+                hint: '向用户一句话汇报新增条数（0 条也要说）',
+              },
+            }
+          }
+          default:
+            return { ok: false, error: { code: 'INVALID', message: `未知 action：${JSON.stringify(record['action'])}`, details: {} } }
+        }
+      } catch (error: unknown) {
+        if (error instanceof ServiceError) {
+          return { ok: false, error: { code: error.code, message: error.message, details: {} } }
+        }
+        return { ok: false, error: { code: 'UPSTREAM', message: error instanceof Error ? error.message : String(error), details: {} } }
+      }
+    },
+  }
+}
+
 export function srwLiteratureToolDef(service: SrwService): SrwToolDef {
   const lit = (): SrwService['literature'] => service.literature
   return {
