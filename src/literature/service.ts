@@ -13,7 +13,7 @@ import { gatedFetchJson } from './http.ts'
 import { searchArxiv, fetchArxivByIds } from './arxiv.ts'
 import { searchOpenAlex } from './openalex.ts'
 import { searchCrossref, resolveDoi, parseCrossrefWork } from './crossref.ts'
-import { identityKey } from './identity.ts'
+import { identityKey, normalizeIdentity } from './identity.ts'
 import { LibraryStore, type LitEntry } from './library.ts'
 import { fetchPdfFor } from './pdf.ts'
 import { appendToRefs, citekeyOf, entryOrThrow } from './bibtex.ts'
@@ -31,6 +31,8 @@ export interface LiteratureDeps {
   readonly rootDir: () => string | undefined
   /** 元数据自愈：按 arXiv id 批量取权威元数据（缺省真网 id_list；测试注入 stub）。 */
   readonly enrichByIds?: (ids: readonly string[]) => Promise<readonly LitCandidate[]>
+  /** 元数据自愈：按通用 DOI 取 Crossref 权威元数据（缺省真网；测试注入 stub）。 */
+  readonly enrichByDoi?: (doi: string) => Promise<LitCandidate>
 }
 
 function assertSource(source: string): LitSource {
@@ -45,6 +47,50 @@ function assertProject(project: string): string {
   return project
 }
 
+/** 作者数组容形：字符串；`{name}`；`{given,family}`（Crossref 式）；
+ * `{author:{display_name}}`（OpenAlex authorships 式）；裸字符串按 ,; 切分。
+ * 上游形状不可信（agent 两轮实测各剪/改形一次），normalize 层收编常见变体，
+ * 认不出的才丢。 */
+function authorsFrom(value: unknown): string[] {
+  const out: string[] = []
+  if (typeof value === 'string') {
+    for (const part of value.split(/\s*[,;]\s*/)) {
+      if (part !== '') out.push(part)
+    }
+    return out
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      if (typeof item === 'string') {
+        if (item.trim() !== '') out.push(item.trim())
+        continue
+      }
+      if (typeof item !== 'object' || item === null) continue
+      const rec = item as Record<string, unknown>
+      const authorRaw = typeof rec['author'] === 'object' && rec['author'] !== null
+        ? rec['author'] as Record<string, unknown>
+        : undefined
+      const name = rec['name']
+        ?? authorRaw?.['display_name']
+        ?? (typeof rec['given'] === 'string' && typeof rec['family'] === 'string'
+          ? `${rec['given']} ${rec['family']}`
+          : rec['family'])
+      if (typeof name === 'string' && name.trim() !== '') out.push(name.trim())
+    }
+  }
+  return out
+}
+
+/** 年份容形：数字原样（>0 校验给下游 citekey/bibtex）；四位数字符串转数；
+ * identity.year 缺席时接受顶层 publication_year/year（OpenAlex 式原始对象
+ * 直传的兜底）。其余 → 0。 */
+function yearFrom(identityRaw: Record<string, unknown>, top: Record<string, unknown>): number {
+  const raw = identityRaw['year'] ?? top['publication_year'] ?? top['year']
+  if (typeof raw === 'number') return raw
+  if (typeof raw === 'string' && /^\d{1,4}$/.test(raw.trim())) return Number(raw.trim())
+  return 0
+}
+
 /** RPC/工具传入的候选归一校验（宽松形状 → LitCandidate）。 */
 export function candidateFromInput(raw: unknown): LitCandidate {
   if (typeof raw !== 'object' || raw === null) throw new ServiceError('INVALID', 'item 必须是对象')
@@ -56,15 +102,14 @@ export function candidateFromInput(raw: unknown): LitCandidate {
   if (identityRaw === null || typeof identityRaw['title'] !== 'string' || identityRaw['title'] === '') {
     throw new ServiceError('INVALID', 'item.identity.title 必填')
   }
-  const identity: LitCandidate['identity'] = {
+  const identity: LitCandidate['identity'] = normalizeIdentity({
     ...(typeof identityRaw['doi'] === 'string' && identityRaw['doi'] !== '' ? { doi: identityRaw['doi'].toLowerCase() } : {}),
     ...(typeof identityRaw['arxivId'] === 'string' && identityRaw['arxivId'] !== '' ? { arxivId: identityRaw['arxivId'] } : {}),
     title: identityRaw['title'],
-    year: typeof identityRaw['year'] === 'number' ? identityRaw['year'] : 0,
-  }
-  const authors = Array.isArray(m['authors'])
-    ? m['authors'].filter((a): a is string => typeof a === 'string' && a !== '')
-    : []
+    year: yearFrom(identityRaw, m),
+  })
+  const authorsDirect = authorsFrom(m['authors'])
+  const authors = authorsDirect.length > 0 ? authorsDirect : authorsFrom(m['authorships'])
   const pickUrl = (key: string): string | undefined => {
     const value = m[key]
     return typeof value === 'string' && value.startsWith('http') ? value : undefined
@@ -84,11 +129,32 @@ export function candidateFromInput(raw: unknown): LitCandidate {
   }
 }
 
+/** 瘦候选补缺合并：**只补空缺**（year=0/作者空/摘要空/链接缺），
+ * 不覆盖调用方已给字段。 */
+function fillThin(candidate: LitCandidate, full: LitCandidate): LitCandidate {
+  return {
+    ...candidate,
+    identity: {
+      ...candidate.identity,
+      ...(candidate.identity.year === 0 && full.identity.year > 0 ? { year: full.identity.year } : {}),
+    },
+    authors: candidate.authors.length > 0 ? candidate.authors : full.authors,
+    abstract: candidate.abstract !== '' ? candidate.abstract : full.abstract,
+    ...(candidate.pdfUrl === undefined && full.pdfUrl !== undefined ? { pdfUrl: full.pdfUrl } : {}),
+    ...(candidate.oaUrl === undefined && full.oaUrl !== undefined ? { oaUrl: full.oaUrl } : {}),
+    ...(candidate.publishedAt === undefined && full.publishedAt !== undefined ? { publishedAt: full.publishedAt } : {}),
+  }
+}
+
+/** 通用 DOI 自愈单发上限（Crossref 无批量元数据端点；防大批慢导入）。 */
+const DOI_ENRICH_CAP = 10
+
 export class LiteratureService {
   private readonly fs: SrwFsLike | undefined
   private readonly offline: () => boolean
   private readonly root: () => string | undefined
   private readonly enrichByIds: (ids: readonly string[]) => Promise<readonly LitCandidate[]>
+  private readonly enrichByDoi: (doi: string) => Promise<LitCandidate>
   readonly gate: RateGate
 
   constructor(deps: LiteratureDeps) {
@@ -96,6 +162,10 @@ export class LiteratureService {
     this.offline = deps.offlineMode
     this.root = deps.rootDir
     this.enrichByIds = deps.enrichByIds ?? (async ids => await fetchArxivByIds({ gate: this.gate }, ids))
+    this.enrichByDoi = deps.enrichByDoi ?? (async doi => {
+      const mailto = await this.mailto()
+      return await resolveDoi({ gate: this.gate, ...(mailto === undefined ? {} : { mailto }) }, doi)
+    })
     this.gate = new RateGate({
       ledgerPath: () => {
         const root = this.root()
@@ -133,55 +203,61 @@ export class LiteratureService {
     }
   }
 
-  /** 元数据自愈：调用方（agent 组参/用户手输）常剪掉 authors/year——带 arxivId
-   * 但 year=0 或 authors 空的候选，入库前批量拉 arXiv 权威元数据**只补空缺**
-   * （不覆盖调用方已给字段）。自愈失败/离线不阻断入库（退化原样入库）。
-   * 返回补全世界（汇报用，键为去版本 arXiv id）。 */
+  /** 元数据自愈：调用方（agent 组参/用户手输）常剪薄或改形——带 arxivId 但
+   * year=0/authors 空的候选，入库前批量拉 arXiv 权威元数据；带通用 DOI 的
+   * 瘦候选走 Crossref 单发（≤DOI_ENRICH_CAP 条）。**只补空缺**（不覆盖调用方
+   * 已给字段）。自愈失败/离线不阻断入库（退化原样入库）。
+   * 返回补全世界（汇报用：去版本 arXiv id / DOI）。 */
   private async enrichThin(candidates: readonly LitCandidate[]): Promise<{
     candidates: LitCandidate[]
     enriched: string[]
   }> {
-    const need = candidates.filter(item => item.identity.arxivId !== undefined
-      && (item.identity.year === 0 || item.authors.length === 0))
-    if (need.length === 0) return { candidates: [...candidates], enriched: [] }
-    const ids = [...new Set(need.map(item => item.identity.arxivId?.replace(/v\d+$/, '') ?? ''))].filter(id => id !== '')
-    let authoritative: readonly LitCandidate[]
-    try {
-      authoritative = await this.enrichByIds(ids)
-    } catch { return { candidates: [...candidates], enriched: [] } }
-    const byId = new Map<string, LitCandidate>()
-    for (const full of authoritative) {
-      const raw = full.identity.arxivId
-      if (raw !== undefined) byId.set(raw.replace(/v\d+$/, '').toLowerCase(), full)
-    }
+    const thin = (item: LitCandidate): boolean => item.identity.year === 0 || item.authors.length === 0
     const out: LitCandidate[] = []
     const enriched: string[] = []
+
+    // arXiv 批量（id_list 一次拉全批）
+    const needArxiv = candidates.filter(item => item.identity.arxivId !== undefined && thin(item))
+    const ids = [...new Set(needArxiv.map(item => item.identity.arxivId?.replace(/v\d+$/, '') ?? ''))]
+      .filter(id => id !== '')
+    const byId = new Map<string, LitCandidate>()
+    if (ids.length > 0) {
+      try {
+        for (const full of await this.enrichByIds(ids)) {
+          const raw = full.identity.arxivId
+          if (raw !== undefined) byId.set(raw.replace(/v\d+$/, '').toLowerCase(), full)
+        }
+      } catch { /* 自愈失败不阻断 */ }
+    }
+
+    // 通用 DOI 单发（arXiv 自赋 DOI 在 normalize 已折叠为 arxivId，不会到这里）
+    const needDoi = candidates.filter(item => item.identity.arxivId === undefined
+      && item.identity.doi !== undefined && thin(item)).slice(0, DOI_ENRICH_CAP)
+    const byDoi = new Map<string, LitCandidate>()
+    for (const item of needDoi) {
+      const doi = item.identity.doi
+      if (doi === undefined || byDoi.has(doi)) continue
+      try {
+        byDoi.set(doi, await this.enrichByDoi(doi))
+      } catch { /* 单条失败跳过 */ }
+    }
+
     for (const candidate of candidates) {
       const id = candidate.identity.arxivId
-      const full = id === undefined ? undefined : byId.get(id.replace(/v\d+$/, '').toLowerCase())
-      const thin = candidate.identity.year === 0 || candidate.authors.length === 0
-      if (full === undefined || !thin) {
+      const full = id === undefined
+        ? candidate.identity.doi !== undefined ? byDoi.get(candidate.identity.doi) : undefined
+        : byId.get(id.replace(/v\d+$/, '').toLowerCase())
+      if (full === undefined || !thin(candidate)) {
         out.push(candidate)
         continue
       }
-      const merged: LitCandidate = {
-        ...candidate,
-        identity: {
-          ...candidate.identity,
-          ...(candidate.identity.year === 0 && full.identity.year > 0 ? { year: full.identity.year } : {}),
-        },
-        authors: candidate.authors.length > 0 ? candidate.authors : full.authors,
-        abstract: candidate.abstract !== '' ? candidate.abstract : full.abstract,
-        ...(candidate.pdfUrl === undefined && full.pdfUrl !== undefined ? { pdfUrl: full.pdfUrl } : {}),
-        ...(candidate.oaUrl === undefined && full.oaUrl !== undefined ? { oaUrl: full.oaUrl } : {}),
-        ...(candidate.publishedAt === undefined && full.publishedAt !== undefined ? { publishedAt: full.publishedAt } : {}),
-      }
+      const merged = fillThin(candidate, full)
       out.push(merged)
       if (merged.identity.year !== candidate.identity.year || merged.authors.length !== candidate.authors.length) {
-        if (id !== undefined) enriched.push(id.replace(/v\d+$/, ''))
+        enriched.push(id?.replace(/v\d+$/, '') ?? candidate.identity.doi ?? '')
       }
     }
-    return { candidates: out, enriched }
+    return { candidates: out, enriched: enriched.filter(item => item !== '') }
   }
 
   /** 入库：元数据自愈 → 批内+库内去重 → 新条目 DOI 撤稿核查（失败不阻断）→ 标红。 */

@@ -11,7 +11,8 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { resolve as pathResolve } from 'node:path'
-import { LiteratureService } from '../src/literature/service.ts'
+import { LiteratureService, candidateFromInput } from '../src/literature/service.ts'
+import { identityKey } from '../src/literature/identity.ts'
 import type { LitCandidate } from '../src/literature/types.ts'
 
 function fakeFs() {
@@ -40,6 +41,7 @@ const THIN_INPUT = { source: 'arxiv', identity: { arxivId: '2606.09498v3', title
 async function makeService(opts: {
   offline?: boolean
   enrich?: (ids: readonly string[]) => Promise<readonly LitCandidate[]>
+  enrichByDoi?: (doi: string) => Promise<LitCandidate>
 }): Promise<{ service: LiteratureService; root: string }> {
   const root = await mkdtemp(join(tmpdir(), 'srw-enrich-'))
   const service = new LiteratureService({
@@ -47,6 +49,7 @@ async function makeService(opts: {
     offlineMode: () => opts.offline === true,
     rootDir: () => root,
     ...(opts.enrich !== undefined ? { enrichByIds: opts.enrich } : {}),
+    ...(opts.enrichByDoi !== undefined ? { enrichByDoi: opts.enrichByDoi } : {}),
   })
   return { service, root }
 }
@@ -207,6 +210,136 @@ test('自愈：import 输出无损 JSON（enriched 数组含空态）', async ()
     assertLossless(result)
     assert.deepEqual(result.enriched, ['2606.09498'])
     assert.equal(JSON.parse(JSON.stringify(result)).enriched.length, 1)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('身份折叠：10.48550/arxiv.* DOI 与 arXiv id 同键——跨源不再两键', () => {
+  assert.equal(identityKey({ doi: '10.48550/arxiv.2606.09498', title: 'A', year: 2026 }),
+    identityKey({ arxivId: '2606.09498v3', title: 'B', year: 0 }))
+  assert.equal(identityKey({ doi: '10.48550/ARXIV.2606.09498', title: 'A', year: 2026 }),
+    'arxiv:2606.09498')
+  // 非 arXiv DOI 不受影响
+  assert.equal(identityKey({ doi: '10.1000/other', title: 'A', year: 2026 }), 'doi:10.1000/other')
+})
+
+test('容形：agent 实测变体全收编——字符串年、对象作者、顶层 publication_year 兜底', () => {
+  // 形态 1：identity.year 缺席 + 顶层 publication_year（OpenAlex 原始对象直传）
+  const rawOpenalex = {
+    source: 'openalex',
+    identity: { doi: '10.48550/arxiv.2606.09498', title: 'Self-Harness' },
+    publication_year: 2026,
+    authorships: [{ author: { display_name: 'Hangfan Zhang' } }, { author: { display_name: 'Shao Zhang' } }],
+  }
+  const c1 = candidateFromInput(rawOpenalex)
+  assert.equal(c1.identity.year, 2026)
+  assert.deepEqual([...c1.authors], ['Hangfan Zhang', 'Shao Zhang'])
+  assert.equal(c1.identity.arxivId, '2606.09498', 'arXiv 自赋 DOI 应折叠为 arxivId')
+  assert.equal(c1.identity.doi, undefined, '折叠后冗余 DOI 丢弃')
+  // 形态 2：字符串年份 + 混合作者对象（Crossref given/family、{name}、裸字符串数组）
+  const c2 = candidateFromInput({
+    source: 'crossref',
+    identity: { doi: '10.1000/x', title: 'T', year: '2024' },
+    authors: [{ given: 'Grace', family: 'Fan' }, { name: 'Solo Name' }, 'Raw String'],
+  })
+  assert.equal(c2.identity.year, 2024)
+  assert.deepEqual([...c2.authors], ['Grace Fan', 'Solo Name', 'Raw String'])
+  // 形态 3：单字符串作者按 ,; 切分
+  const c3 = candidateFromInput({
+    source: 'arxiv', identity: { arxivId: '2401.00001', title: 'T', year: 2024 },
+    authors: 'Alice A; Bob B',
+  })
+  assert.deepEqual([...c3.authors], ['Alice A', 'Bob B'])
+  // 形态 4：彻底认不出的年份仍归 0（交给自愈）
+  const c4 = candidateFromInput({
+    source: 'arxiv', identity: { arxivId: '2401.00001', title: 'T', year: 'recent' },
+  })
+  assert.equal(c4.identity.year, 0)
+})
+
+test('自愈：openalex 瘦候选（doi 折叠→arxivId）走 arXiv 批量补全，键归 arxiv', async () => {
+  const calls: string[][] = []
+  const { service, root } = await makeService({
+    enrich: async ids => {
+      calls.push([...ids])
+      return [FULL]
+    },
+  })
+  try {
+    const result = await service.importEntries('heal', [{
+      source: 'openalex',
+      identity: { doi: '10.48550/arxiv.2606.09498', title: 'Self-Harness' },
+    }])
+    const entries = await storedEntries(root, 'heal')
+    assert.equal(entries['doi:10.48550/arxiv.2606.09498'], undefined, '不应再产生 doi 键')
+    const entry = entries['arxiv:2606.09498']!
+    assert.equal(entry.identity.year, 2026)
+    assert.equal(entry.pdfUrl, 'https://arxiv.org/pdf/2606.09498v3')
+    assert.deepEqual(result.enriched, ['2606.09498'])
+    assert.deepEqual(calls, [['2606.09498']])
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('自愈：通用 DOI 瘦候选走 Crossref 单发（stub），上限 10 条', async () => {
+  const dois: string[] = []
+  const { service, root } = await makeService({
+    enrich: async () => [],
+    enrichByDoi: async doi => {
+      dois.push(doi)
+      return { source: 'crossref', identity: { doi, title: 'Generic', year: 2020 }, authors: ['A B'], venue: 'J', abstract: '' }
+    },
+  })
+  try {
+    const items = [1, 2].map(n => ({
+      source: 'crossref',
+      identity: { doi: `10.1000/generic-${n}`, title: `G${n}` },
+    }))
+    const result = await service.importEntries('heal', items)
+    const entries = await storedEntries(root, 'heal')
+    assert.equal(entries['doi:10.1000/generic-1']?.identity.year, 2020)
+    assert.deepEqual([...entries['doi:10.1000/generic-1']!.authors], ['A B'])
+    assert.equal(dois.length, 2)
+    assert.deepEqual(result.enriched, ['10.1000/generic-1', '10.1000/generic-2'])
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('自愈：单条 DOI 自愈失败只跳过该条，其余照常', async () => {
+  const { service, root } = await makeService({
+    enrichByDoi: async doi => {
+      if (doi === '10.1000/bad') throw new Error('UNRESOLVED')
+      return { source: 'crossref', identity: { doi, title: 'ok', year: 2021 }, authors: ['X Y'], venue: '', abstract: '' }
+    },
+  })
+  try {
+    await service.importEntries('heal', [
+      { source: 'crossref', identity: { doi: '10.1000/bad', title: 'Bad' } },
+      { source: 'crossref', identity: { doi: '10.1000/good', title: 'Good' } },
+    ])
+    const entries = await storedEntries(root, 'heal')
+    assert.equal(entries['doi:10.1000/bad']?.identity.year, 0, '失败的退化原样')
+    assert.equal(entries['doi:10.1000/good']?.identity.year, 2021)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('跨源同文一批入库：arXiv 形态 + OpenAlex DOI 形态合并为一条', async () => {
+  const { service, root } = await makeService({ enrich: async () => [] })
+  try {
+    const result = await service.importEntries('heal', [
+      { source: 'arxiv', identity: { arxivId: '2606.09498v3', title: 'Self-Harness', year: 2026 }, authors: ['A'], venue: 'arXiv', abstract: 'x' },
+      { source: 'openalex', identity: { doi: '10.48550/arxiv.2606.09498', title: 'Self-Harness', year: 2026 }, authors: ['A'], venue: '', abstract: '' },
+    ])
+    assert.equal(result.added, 1, '同文两形态应合并')
+    assert.equal(result.duplicates, 0)
+    const entries = await storedEntries(root, 'heal')
+    assert.equal(Object.keys(entries).length, 1)
+    assert.equal(entries['arxiv:2606.09498']?.identity.arxivId, '2606.09498v3', '批内择优保留信息量高者')
   } finally {
     await rm(root, { recursive: true, force: true })
   }
