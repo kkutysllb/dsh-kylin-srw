@@ -8,7 +8,7 @@ import { buildSourceMap } from '../src/reading/source-map.ts'
 import type { ExtractedBlock } from '../src/reading/extract.ts'
 
 const block = (id: string, text: string, order: number): ExtractedBlock => ({
-  id, text, order, page: 1, kind: 'para',
+  id, text, order, page: 1, kind: 'para', size: 10,
   bbox: { x0: 0, yTop: 0, x1: 0, yBottom: 0 },
   quality: 'ok',
 })

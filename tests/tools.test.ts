@@ -306,7 +306,7 @@ test('srw_watch 工具：create（绑会话+时钟落任务）→ list → run �
 
 
 test('srw_read：全部动作豁免审批（授权来自会话显式意图）', () => {
-  for (const action of ['status', 'extract', 'translate', 'export']) {
+  for (const action of ['status', 'extract', 'translate', 'notes', 'export']) {
     assert.equal(approvalDecision(exec(SRW_READ_TOOL_NAME, { action }), true), undefined, action)
   }
 })
@@ -342,7 +342,8 @@ test('srw_read 工具：status 待译清单 → 分批 translate → remaining �
     try {
       await mkdir(join(root, 'demo', 'literature', 'pdf'), { recursive: true })
       const pdf = buildFixturePdf([
-        { x: 60, y: 740, text: 'Attention Is All You Need', size: 16 },
+        // y=726：距页缘 66pt——furniture 带（<62pt）外，否则标题会被当页眉杂讯
+        { x: 60, y: 726, text: 'Attention Is All You Need', size: 16 },
         ...Array.from({ length: 8 }, (_u, i) => ({ x: 60, y: 700 - i * 14, text: `Body paragraph line ${i} of the reading tool test.` })),
       ])
       await writeFile(join(root, 'demo', 'literature', 'pdf', 'tool-paper-123.pdf'), pdf)
@@ -369,6 +370,12 @@ test('srw_read 工具：status 待译清单 → 分批 translate → remaining �
       const tr2 = await run({ action: 'translate', project: 'demo', paperKey: 'tool-paper' })
       assert.equal(tr2.ok, true)
       assert.equal(tr2.value?.remaining, 0, '剩余全量翻译后归零')
+
+      const notes = await run({ action: 'notes', project: 'demo', paperKey: 'tool-paper' })
+      assert.equal(notes.ok, true, 'notes 动作可用（无节时只生成导读）')
+      assert.equal(notes.value?.guideReady, true)
+      assert.equal(notes.value?.pending, 0)
+      assertLossless(notes)
 
       const archived = await run({ action: 'export', project: 'demo', paperKey: 'tool-paper' })
       assert.equal(archived.ok, true)

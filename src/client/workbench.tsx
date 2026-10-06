@@ -6,7 +6,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ClientContext } from './protocol-client.ts'
 import { DiagView } from './view.tsx'
-import { assembleParagraphs } from '../reading/paragraphs.ts'
+import { assembleReading } from '../reading/paragraphs.ts'
 import { parsePaper } from '../reading/render.ts'
 
 const RPC_CHANNEL = '/dsh-kylin-srw'
@@ -78,6 +78,7 @@ interface ReadingStatusLite {
   readonly extracted: boolean
   readonly pages: number
   readonly blocks: number
+  readonly translatable: number
   readonly translated: number
   readonly verified: number
   readonly mismatch: number
@@ -583,8 +584,9 @@ export function WorkbenchView({ ctx }: { readonly ctx: ClientContext }): React.R
         }
       }>(ctx, 'reading.content', { project, paperKey })
       if (!alive.current) return
-      // 呈现层段落装配：整篇逐段（块级校验/缓存不动）；verified 段不显示任何块痕迹
-      setReadingView(assembleParagraphs(parsePaper(value.markdown), value.verify.states).map(p => ({
+      // 呈现层段落装配：整篇逐段（块级校验/缓存不动）；verified 段不显示任何块痕迹。
+      // 面板只展示正文流；参考文献（英文原样）与图内标注进归档 PDF 的附录/图注。
+      setReadingView(assembleReading(parsePaper(value.markdown), value.verify.states).flow.map(p => ({
         id: p.id,
         blockIds: p.blockIds,
         ...(p.kind !== undefined ? { kind: p.kind } : {}),
@@ -623,7 +625,7 @@ export function WorkbenchView({ ctx }: { readonly ctx: ClientContext }): React.R
 
   /** 翻译 = 引擎车道（用户指令：不许插件私有的后台执行）：组装自包含提示词
    * 发给当前会话的 Agent，由它调 srw_read 分批翻译（每批可见可汇报可中断），
-   * 完成后自动归档当日 PDF。面板只发起，不自己扛长任务。 */
+   * 接着生成导读/备注，最后归档译注版 PDF。面板只发起，不自己扛长任务。 */
   const readingTranslateViaAgent = async (): Promise<void> => {
     const project = overview?.activeProject ?? ''
     const paperKey = readingKey.trim()
@@ -635,14 +637,38 @@ export function WorkbenchView({ ctx }: { readonly ctx: ClientContext }): React.R
         `1) action=status 看总块数与待译清单 pendingIds；`,
         `2) 分批翻译：每批 ≤40 个 key（pendingIds 按页号 p<页>-b<序> 分组），`,
         `action=translate 传 keys，每批完成向用户报告一次进度（已译/总数）；`,
-        `3) remaining=0 后 action=export 归档当日 PDF，汇报校验四态（✓/⚠/孤/丢）与归档路径。`,
+        `3) remaining=0 后 action=notes 生成全文导读与每节精读备注（会分批返回，`,
+        `pending>0 就重复调用 notes 直到 pending=0，每批向用户报进度）；`,
+        `4) action=export 归档译注版 PDF，汇报校验四态（✓/⚠/孤/丢）与归档路径。`,
         `缓存命中的块不会重复翻译；中断后重发同一指令会接着续译。`,
       ].join('\n')
       const outcome = await sendToCurrentAgent(prompt)
       if (!alive.current) return
       setReadingNotice(outcome === 'sent'
-        ? '已发起：翻译由当前会话的 Agent 分批执行（已切到会话页），完成后自动归档 PDF'
+        ? '已发起：翻译→导读/备注→归档由当前会话的 Agent 分批执行（已切到会话页）'
         : '提示词已复制到剪贴板——到会话输入框粘贴回车即发起（Agent 已带 srw_read 工具）')
+    } finally {
+      if (alive.current) setReadingBusy(false)
+    }
+  }
+
+  /** 译注版分析层单独发起（已译完但没生成导读/备注时用）：同样走引擎车道。 */
+  const readingNotesViaAgent = async (): Promise<void> => {
+    const project = overview?.activeProject ?? ''
+    const paperKey = readingKey.trim()
+    if (project === '' || paperKey === '') { setReadingNotice('先打开项目并选择论文'); return }
+    setReadingBusy(true)
+    try {
+      const prompt = [
+        `请为论文 ${paperKey}（项目 ${project}）生成译注版精读分析层，用 srw_read 工具：`,
+        `action=notes 生成全文导读与每节【本节速览】/◆精读备注。返回 pending>0 时重复调用`,
+        `（每批最多 6 节，会话里逐批向用户报进度），pending=0 后 action=export 归档译注版 PDF。`,
+      ].join('\n')
+      const outcome = await sendToCurrentAgent(prompt)
+      if (!alive.current) return
+      setReadingNotice(outcome === 'sent'
+        ? '已发起：导读/备注由当前会话的 Agent 逐批生成（已切到会话页），完成后自动归档'
+        : '提示词已复制到剪贴板——到会话输入框粘贴回车即发起')
     } finally {
       if (alive.current) setReadingBusy(false)
     }
@@ -876,7 +902,7 @@ export function WorkbenchView({ ctx }: { readonly ctx: ClientContext }): React.R
 
       <div className='srw-card'>
         <h2>精读{readingStatus !== null ? `：${readingStatus.paperKey}` : ''}</h2>
-        <p className='srw-detail'>整篇逐段精读：PDF 抽块 → 逐块翻译（按哈希缓存）→ 段落装配成**连续双语正文**，可导出归档 PDF（readings/&lt;日期&gt;/）。校验在块级做：源段被手改的段会亮 ⚠，其余段落不显示任何标记。</p>
+        <p className='srw-detail'>译注版精读：PDF 抽块（页眉/图内碎片/参考文献自动剔除，参考文献在 PDF 里保留英文原样）→ 逐块翻译 → 段落装配成**连续双语正文**，导读与每节速览/精读备注由 Agent 生成，导出译注版 PDF（封面/阅读指南/导读/正文/图表清单/术语表/参考文献/免责）。校验在块级做：源段被手改的段会亮 ⚠。</p>
         {readingNotice !== null ? <p className='srw-detail'>{readingNotice}</p> : null}
         {pdfEntries.length === 0 ? (
           <p className='srw-detail'>项目库里还没有带 PDF 的条目——先在上方文献卡「取 PDF」。</p>
@@ -908,9 +934,15 @@ export function WorkbenchView({ ctx }: { readonly ctx: ClientContext }): React.R
             <button
               className='srw-btn'
               disabled={readingBusy || readingKey.trim() === ''}
-              title='发给当前会话的 Agent 分批执行（可见进度），完成后自动归档 PDF'
+              title='发给当前会话的 Agent：分批翻译 → 导读/备注 → 归档译注版 PDF'
               onClick={() => { void readingTranslateViaAgent() }}
             >翻译</button>
+            <button
+              className='srw-btn'
+              disabled={readingBusy || readingKey.trim() === ''}
+              title='已译完但缺导读/备注时用：发给 Agent 逐批生成后归档'
+              onClick={() => { void readingNotesViaAgent() }}
+            >导读/备注</button>
             <button className='srw-btn' disabled={readingBusy || readingKey.trim() === ''} onClick={() => { void readingAction('verify') }}>校验</button>
             <button
               className='srw-btn'
@@ -924,7 +956,7 @@ export function WorkbenchView({ ctx }: { readonly ctx: ClientContext }): React.R
           <p className='srw-project-meta'>
             <span>{readingStatus.pages} 页</span>
             <span>·</span>
-            <span>块 {readingStatus.blocks}</span>
+            <span>块 {readingStatus.blocks}（可译 {readingStatus.translatable}）</span>
             <span>·</span>
             <span>已译 {readingStatus.translated}</span>
             <span>·</span>

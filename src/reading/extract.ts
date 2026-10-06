@@ -10,6 +10,11 @@ import { createRequire } from 'node:module'
 export type BlockKind =
   | 'title' | 'abstract' | 'heading' | 'para' | 'list' | 'caption'
   | 'table' | 'formula' | 'reference' | 'code' | 'footnote'
+  /** 版面杂讯（页眉/页脚/license 行/日期行）：不进正文、不翻译。 */
+  | 'furniture'
+  /** 图表内部的标注碎片（坐标轴标签/图例文字）：不进正文，归到所属图注的
+   * 「图内标注」。 */
+  | 'figlabel'
 
 export type BlockQuality = 'ok' | 'suspicious'
 
@@ -29,6 +34,8 @@ export interface ExtractedBlock {
   readonly order: number
   readonly text: string
   readonly bbox: BBox
+  /** 块内最大行字号（pt）——版面判别（标题/杂讯）依据；source_map 不存。 */
+  readonly size: number
   readonly quality: BlockQuality
 }
 
@@ -208,18 +215,123 @@ function groupBlocks(lines: readonly ColumnLine[]): RawBlock[] {
   return blocks
 }
 
-/** kind 启发式（保守：只判 title/heading/abstract，其余 para）。 */
-function kindOf(block: { text: string; firstLine: string; size: number; lineCount: number }, bodySize: number, page: number, firstOnPageOne: boolean): BlockKind {
+/** kind 启发式（保守：只判 heading/abstract/caption，其余 para；title 由
+ * refineBlocks 在看到 p1 全部块后统一选——单看第一块会把页眉日期误当标题，
+ * 而真正的标题因为不是第一块永远得不到 title）。 */
+function kindOf(block: { text: string; firstLine: string; size: number; lineCount: number }, bodySize: number): BlockKind {
   const first = block.firstLine
-  if (firstOnPageOne && block.lineCount <= 3 && block.size >= bodySize * 1.15 && block.text.length <= 200) return 'title'
   // 标题常与正文同号（粗体在字形里，文本层看不到）且后紧跟正文（间距小于
   // 段合并阈值）→ 用**首行**判、允许标题后带少量正文（lineCount ≤ 3）
   if (block.lineCount <= 3 && first.length <= 120
     && (/^\d+(\.\d+)*\s+\S/.test(first) || /^(abstract|introduction|related work|conclusion|references|摘要|引言|结论)/i.test(first))) {
     return first.toLowerCase().startsWith('abstract') || first.startsWith('摘要') ? 'abstract' : 'heading'
   }
+  // 图注/表注：`Figure 3: …` / `Table 2. …`（带编号+冒号/点，避免把
+  // "Figure 1 shows…" 这类正文句误收）
+  if (/^(figure|fig\.|table)\s*\d+\s*[.:]/i.test(first) && block.lineCount <= 10) return 'caption'
   return 'para'
 }
+
+const DATE_LINE_RE = /^(january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{1,2},?\s*20\d\d$|^\d{1,2}\s+(january|february|march|april|may|june|july|august|september|october|november|december)\s+20\d\d$/i
+const VENUE_RE = /\b(arxiv|preprint|proceedings|license|copyright|creative commons|accepted|published|submitted|manuscript)\b|©/i
+/** 页眉/页脚带：距页缘小于该值的短行视为版面杂讯（正文上边距一般 ≥66pt）。 */
+const FURNITURE_EDGE_PT = 62
+const FURNITURE_MAX_CHARS = 90
+
+/** 同栏判定：水平区间不相交即跨栏（无上下间距概念）。 */
+function sameColumn(a: BBox, b: BBox): boolean {
+  return a.x0 < b.x1 && b.x0 < a.x1
+}
+
+/** 块间距（bottom-up 坐标：上方块 yBottom − 下方块 yTop）。 */
+function verticalGap(above: BBox, below: BBox): number {
+  return above.yBottom - below.yTop
+}
+
+/** 版面二次判别（0205 附记四）：kindOf 只看块自身，这一遍看**版面语境**——
+ * 页缘杂讯（页眉日期/license 行）、p1 标题重选、参考文献段、图内标注碎片。
+ * 顺带让"参考文献英文原样保留""图内标注归图注"成为可能。 */
+export function refineBlocks(
+  blocks: readonly ExtractedBlock[],
+  pageHeights: Readonly<Record<number, number>>,
+): ExtractedBlock[] {
+  if (blocks.length === 0) return []
+  // 正文基准字号：取第 2 页起块字号中位数（p1 混着标题/作者，不可信）
+  const bodySizes = blocks.filter(block => block.page >= 2).map(block => block.size)
+  bodySizes.sort((a, b) => a - b)
+  const bodySize = bodySizes[Math.floor(bodySizes.length / 2)] ?? 10
+
+  const kinds = new Map<string, BlockKind>(blocks.map(block => [block.id, block.kind]))
+
+  // 1) 页眉/页脚杂讯：距页缘 < 62pt 的短行（日期、license、页码、会议脚注）
+  for (const block of blocks) {
+    const pageH = pageHeights[block.page]
+    if (pageH === undefined) continue
+    const nearTop = pageH - block.bbox.yTop < FURNITURE_EDGE_PT
+    const nearBottom = block.bbox.yBottom < FURNITURE_EDGE_PT * 0.7
+    if ((nearTop || nearBottom) && block.text.length <= FURNITURE_MAX_CHARS) kinds.set(block.id, 'furniture')
+  }
+
+  // 2) p1 标题重选：p1 前 8 块（去掉杂讯）里字号最大且显著大于正文的块；
+  //    日期/venue 行即便字号大也不候选
+  let titleId: string | undefined
+  let titleSize = 0
+  for (const block of blocks.filter(block => block.page === 1).slice(0, 8)) {
+    if (kinds.get(block.id) === 'furniture') continue
+    if (block.text.length > 200) continue
+    // ExtractedBlock 未存 firstLine（行合并后不可恢复）——venue 判定取首段近似
+    const head = block.text.slice(0, 120)
+    if (DATE_LINE_RE.test(block.text) || VENUE_RE.test(head) || /^arxiv\s*:/i.test(head)) continue
+    if (block.size > titleSize) {
+      titleSize = block.size
+      titleId = block.id
+    }
+  }
+  if (titleId !== undefined && titleSize >= bodySize * 1.08) {
+    kinds.set(titleId, 'title')
+    for (const block of blocks) {
+      if (block.id !== titleId && block.kind === 'title') kinds.set(block.id, 'para')
+    }
+  }
+
+  // 3) 参考文献段：首个首行 References 的块之后全部 → reference
+  //    （英文原样保留，不翻译——参考文献译成中文只会破坏检索）
+  let inRefs = false
+  for (const block of blocks) {
+    if (!inRefs && /^(references|bibliography)\s*$/i.test(block.text)) {
+      inRefs = true
+      kinds.set(block.id, 'heading')
+      continue
+    }
+    if (inRefs) kinds.set(block.id, 'reference')
+  }
+
+  // 4) 图内标注碎片：单行、≤60 字符、无句末标点、上下间隙都显著大于行距、
+  //    同栏，且附近（本页或后 2 页内）存在图注 → 归属图注的「图内标注」
+  const captionPages = new Set(blocks.filter(block => kinds.get(block.id) === 'caption').map(block => block.page))
+  for (let index = 1; index < blocks.length - 1; index += 1) {
+    const block = blocks[index]!
+    if (kinds.get(block.id) !== 'para') continue
+    if (block.text.length > 60 || block.text.length === 0) continue
+    if (block.size > bodySize * 1.15) continue // 放大字号是标题系，不当碎片
+    if (block.bbox.yTop - block.bbox.yBottom > block.size * 1.9) continue // 多行块不算
+    if (/[.!?。]$/.test(block.text)) continue
+    const prev = blocks[index - 1]!
+    const next = blocks[index + 1]!
+    const gapAbove = sameColumn(prev.bbox, block.bbox) ? verticalGap(prev.bbox, block.bbox) : Number.POSITIVE_INFINITY
+    const gapBelow = sameColumn(block.bbox, next.bbox) ? verticalGap(block.bbox, next.bbox) : Number.POSITIVE_INFINITY
+    if (gapAbove <= bodySize * 2.6 || gapBelow <= bodySize * 2.6) continue
+    const hasCaptionNearby = [...captionPages].some(page => page >= block.page && page <= block.page + 2)
+    if (!hasCaptionNearby) continue
+    kinds.set(block.id, 'figlabel')
+  }
+
+  return blocks.map(block => ({ ...block, kind: kinds.get(block.id) ?? block.kind }))
+}
+
+/** 不参与翻译的版面 kind：furniture 无语义；figlabel 归图注「图内标注」
+ * 呈现；reference 英文原样保留（译注版体例，0205 附记四）。 */
+export const UNTRANSLATED_KINDS: ReadonlySet<string> = new Set(['furniture', 'figlabel', 'reference'])
 
 /** 全文抽取：pages 页 → 阅读序块表。 */
 export async function extractPdfBlocks(data: Uint8Array): Promise<ExtractResult> {
@@ -230,6 +342,7 @@ export async function extractPdfBlocks(data: Uint8Array): Promise<ExtractResult>
     ...(standardFontDataUrl() !== undefined ? { standardFontDataUrl: standardFontDataUrl() } : {}),
   }).promise
   const blocks: ExtractedBlock[] = []
+  const pageHeights: Record<number, number> = {}
   let order = 0
   for (let pageNumber = 1; pageNumber <= doc.numPages; pageNumber += 1) {
     const page = await doc.getPage(pageNumber)
@@ -280,20 +393,22 @@ export async function extractPdfBlocks(data: Uint8Array): Promise<ExtractResult>
     }
     const sizes = [...pageLines].map(line => line.size).sort((a, b) => a - b)
     const bodySize = sizes[Math.floor(sizes.length / 2)] ?? 10
+    pageHeights[pageNumber] = viewport.height
     let perPage = 0
     for (const block of groupBlocks(pageLines)) {
       perPage += 1
       blocks.push({
         id: `p${pageNumber}-b${perPage}`,
         page: pageNumber,
-        kind: kindOf(block, bodySize, pageNumber, pageNumber === 1 && order === 0),
+        kind: kindOf(block, bodySize),
         order,
         text: block.text,
         bbox: { x0: block.x0, yTop: block.yTop, x1: block.x1, yBottom: block.yBottom },
+        size: block.size,
         quality: block.suspicious ? 'suspicious' : 'ok',
       })
       order += 1
     }
   }
-  return { pages: doc.numPages, blocks }
+  return { pages: doc.numPages, blocks: refineBlocks(blocks, pageHeights) }
 }

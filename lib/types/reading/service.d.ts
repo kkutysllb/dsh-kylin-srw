@@ -3,6 +3,7 @@
  * 磁盘域 `<root>/<project>/reading/<paperKey>/`；LLM 经 reflect 通道可选
  * （缺席 → 翻译降级 INVALID 提示，抽取/校验不受影响）。 */
 import { type SrwFsLike } from '../host.ts';
+import { type NotesFile } from './notes.ts';
 import { type Glossary } from './glossary.ts';
 import { type SourceMap } from './source-map.ts';
 import { type LlmPort } from './translator.ts';
@@ -23,6 +24,8 @@ export interface ReadingStatus {
     readonly extracted: boolean;
     readonly pages: number;
     readonly blocks: number;
+    /** 参与翻译的块数（排除 furniture/figlabel/reference）。 */
+    readonly translatable: number;
     readonly translated: number;
     readonly verified: number;
     readonly mismatch: number;
@@ -43,6 +46,22 @@ export declare class ReadingService {
     private paperPath;
     private cachePath;
     private glossaryPath;
+    private notesPath;
+    loadNotes(project: string, paperKey: string): Promise<NotesFile | undefined>;
+    /** 装配（exportPdf 与 notes 共用）：paper.md → 段落流 + 参考文献 + 图内标注。 */
+    private assemble;
+    /** 译注版分析层（0205 附记四）：全文导读 + 每节【本节速览】/◆精读备注。
+     * 可恢复：已有的节跳过，失败重跑只补缺失；`limit` 限单次生成的节数
+     * （agent 逐批调用 → 每批完成都能向用户报进度）。 */
+    generateNotes(project: string, paperKey: string, options?: {
+        limit?: number;
+    }): Promise<{
+        guideReady: boolean;
+        total: number;
+        done: number;
+        pending: number;
+        model: string;
+    }>;
     loadMap(project: string, paperKey: string): Promise<SourceMap | undefined>;
     loadGlossary(project: string, paperKey: string): Promise<Glossary>;
     /** 术语表写入 + 定向失效：srcText 含变更术语的块的缓存条目剔除。 */
@@ -72,8 +91,9 @@ export declare class ReadingService {
         verify: VerifyReport;
     }>;
     verify(project: string, paperKey: string): Promise<VerifyReport>;
-    /** 结果 PDF 归档（readings/<YYYY-MM-DD>/<paperKey>.pdf）：从 paper.md
-     * 渲染双语 PDF 落到项目工作区独立子目录。同日重导覆盖（可再生产物）。 */
+    /** 译注版 PDF 归档（readings/<YYYY-MM-DD>/<paperKey>.pdf）：封面信息表 +
+     * 阅读指南 + 全文导读 + 正文逐段双语（速览/备注盒 + 图内标注）+ 附录
+     * （图表清单/术语对照表/参考文献英文原样/免责说明）。同日重导覆盖。 */
     exportPdf(project: string, paperKey: string): Promise<{
         path: string;
         bytes: number;

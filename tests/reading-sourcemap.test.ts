@@ -10,6 +10,7 @@ const block = (overrides: Partial<ExtractedBlock> & { id: string; text: string }
   kind: 'para',
   order: 0,
   bbox: { x0: 0, yTop: 0, x1: 0, yBottom: 0 },
+  size: 10,
   quality: 'ok',
   ...overrides,
 })

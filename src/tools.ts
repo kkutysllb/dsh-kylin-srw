@@ -9,6 +9,7 @@
 import { ServiceError, type SrwService } from './service.ts'
 import type { ProjectMeta } from './core/schema.ts'
 import type { LitCandidate } from './literature/types.ts'
+import { UNTRANSLATED_KINDS } from './reading/extract.ts'
 
 export const SRW_TOOL_NAME = 'srw_project'
 export const SRW_LIT_TOOL_NAME = 'srw_literature'
@@ -475,7 +476,7 @@ export function srwReadToolDef(service: SrwService): SrwToolDef {
         const map = await reading().loadMap(project, paperKey)
         if (map !== undefined) {
           pendingIds = map.blocks
-            .filter(block => block.translation === undefined)
+            .filter(block => block.translation === undefined && !UNTRANSLATED_KINDS.has(block.kind))
             .map(block => block.id)
           if (pendingIds.length > READ_PENDING_CAP) {
             pendingIds = pendingIds.slice(0, READ_PENDING_CAP)
@@ -487,7 +488,7 @@ export function srwReadToolDef(service: SrwService): SrwToolDef {
           pendingIds,
           ...(pendingTruncated ? { hint: `待译块超过 ${READ_PENDING_CAP}，只列了前 ${READ_PENDING_CAP}——按页号分批，译完一批再用 status 刷新` } : {}),
           ...(status.extracted && pendingIds.length > 0 ? { hint: '分批翻译：每批 ≤40 个 key（按页号 p<页>-b<序> 分组），逐批调 translate 并向用户报进度' } : {}),
-          ...(status.extracted && status.translated >= status.blocks && status.mismatch === 0 ? { hint: '全部已译——可直接 action=export 归档' } : {}),
+          ...(status.extracted && status.translated >= status.translatable && status.mismatch === 0 ? { hint: '全部已译——action=notes 生成全文导读与精读备注，然后 action=export 归档' } : {}),
         }
       }
       case 'extract': {
@@ -499,13 +500,22 @@ export function srwReadToolDef(service: SrwService): SrwToolDef {
         const rawKeys = record['keys']
         const keys = Array.isArray(rawKeys) ? rawKeys.filter((item): item is string => typeof item === 'string') : undefined
         const status = await reading().translate(project, paperKey, { ...(keys !== undefined && keys.length > 0 ? { keys } : {}) })
-        const remaining = Math.max(0, status.blocks - status.translated + status.mismatch)
+        const remaining = Math.max(0, status.translatable - status.translated + status.mismatch)
         return {
           ...status,
           remaining,
           hint: remaining > 0
             ? `还有 ${remaining} 块待译——继续下一批（每批 ≤40 keys），每批完成向用户报一次进度`
-            : '全部已译——向用户汇报最终校验四态，然后 action=export 归档当日 PDF',
+            : '全部已译——action=notes 生成全文导读与每节精读备注（逐节调用，向用户报进度），然后 action=export 归档',
+        }
+      }
+      case 'notes': {
+        const result = await reading().generateNotes(project, paperKey)
+        return {
+          ...result,
+          hint: result.pending > 0
+            ? `导读已就绪；还有 ${result.pending} 节备注未生成（失败/超时）——重跑 action=notes 只补缺失节`
+            : '全文导读与全部节备注已生成——action=export 归档译注版 PDF',
         }
       }
       case 'export': {
@@ -519,15 +529,18 @@ export function srwReadToolDef(service: SrwService): SrwToolDef {
     name: SRW_READ_TOOL_NAME,
     description: [
       '精读执行面（科研工作台）：把项目文献库里的 PDF 抽成块（extract）、逐块 LLM 翻译成中文',
-      '（translate，带哈希缓存——重复调用只译新增/被改块）、查进度（status，含待译块清单）、',
-      '把双语结果按日期归档成 PDF（export，落 readings/<日期>/）。',
+      '（translate，带哈希缓存；页眉页脚/图内碎片/参考文献不译，参考文献在 PDF 里保留英文原样）、',
+      '查进度（status，含待译块清单）、生成译注版分析层（notes：全文导读 + 每节【本节速览】与',
+      '◆精读备注，逐节调用宿主 LLM）、按日期归档成译注版 PDF（export，落 readings/<日期>/，',
+      '含封面/阅读指南/导读/双语正文/图表清单/术语对照表/参考文献原样/免责说明）。',
       '翻译纪律：每批 ≤40 个块 id（按页号分组），逐批调用并向用户报告进度；不要一次整篇',
-      '（长论文会超时）。需要项目已存在、条目已取 PDF；LLM 用宿主默认模型。',
+      '（长论文会超时）。notes 纪律：逐节生成，每节完成报进度。需要项目已存在、条目已取 PDF；',
+      'LLM 用宿主默认模型。',
     ].join(''),
     parameters: {
       type: 'object',
       properties: {
-        action: { type: 'string', enum: ['status', 'extract', 'translate', 'export'], description: '要执行的动作' },
+        action: { type: 'string', enum: ['status', 'extract', 'translate', 'notes', 'export'], description: '要执行的动作' },
         project: { type: 'string', description: '项目 slug' },
         paperKey: { type: 'string', description: '论文 key（reading/<paperKey> 目录名，如 arxiv-1706-03762）' },
         pdfPath: { type: 'string', description: 'extract 必填：PDF 在项目内的相对路径（如 literature/pdf/xxx.pdf）' },

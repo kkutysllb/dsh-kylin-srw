@@ -7,9 +7,10 @@ import { detectGutter, extractPdfBlocks, buildLines, type ExtractResult } from '
 import { buildFixturePdf } from './fixture-pdf.ts'
 
 test('extract：单栏——行序保持、紧邻行并段、序号标题判 heading', async () => {
-  // 标题前后留真实文档特有的空距（合并阈值 1.8×行高=18pt）
+  // 标题前后留真实文档特有的空距（合并阈值 1.8×行高=18pt）；y=726 在
+  // furniture 带（页缘 62pt）外——真论文的标题从不在页缘带里
   const lines = [
-    { x: 60, y: 740, text: 'A Study of Attention Mechanisms', size: 16 },
+    { x: 60, y: 726, text: 'A Study of Attention Mechanisms', size: 16 },
     { x: 60, y: 706, text: 'Abstract' },
     { x: 60, y: 674, text: 'This paper studies attention. The first paragraph continues here' },
     { x: 60, y: 662, text: 'with a second physical line that should merge into the same block.' },

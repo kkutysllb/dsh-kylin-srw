@@ -8,9 +8,11 @@ import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { SLUG_RE } from '../core/schema.ts'
 import { assertInsideRoot, type SrwFsLike } from '../host.ts'
+import { Limiter, limitedMap } from '../util/limiter.ts'
 import { ServiceError } from '../service.ts'
-import { extractPdfBlocks } from './extract.ts'
-import { assembleParagraphs } from './paragraphs.ts'
+import { extractPdfBlocks, UNTRANSLATED_KINDS } from './extract.ts'
+import { assembleReading, splitSections, type AssembledReading } from './paragraphs.ts'
+import { emptyNotesFile, generateGuide, generateSectionNote, type NotesFile } from './notes.ts'
 import { renderReadingPdf } from './pdfdoc.ts'
 import { cacheKeyOf, emptyCache, lookup, store, type TranslationCache } from './cache.ts'
 import { enforceGlossary, type Glossary } from './glossary.ts'
@@ -35,6 +37,8 @@ export interface ReadingStatus {
   readonly extracted: boolean
   readonly pages: number
   readonly blocks: number
+  /** 参与翻译的块数（排除 furniture/figlabel/reference）。 */
+  readonly translatable: number
   readonly translated: number
   readonly verified: number
   readonly mismatch: number
@@ -111,6 +115,88 @@ export class ReadingService {
     return join(this.dir(project, paperKey), 'glossary.json')
   }
 
+  private notesPath(project: string, paperKey: string): string {
+    return join(this.dir(project, paperKey), 'notes.json')
+  }
+
+  async loadNotes(project: string, paperKey: string): Promise<NotesFile | undefined> {
+    return await this.readJson<NotesFile>(this.notesPath(project, paperKey))
+  }
+
+  /** 装配（exportPdf 与 notes 共用）：paper.md → 段落流 + 参考文献 + 图内标注。 */
+  private async assemble(project: string, paperKey: string): Promise<{
+    map: SourceMap
+    assembled: AssembledReading
+    verify: VerifyReport
+    markdown: string
+  }> {
+    const map = await this.loadMap(project, paperKey)
+    if (map === undefined) throw new ServiceError('NOT_FOUND', `未抽取：${paperKey}`)
+    const markdown = await readFile(this.paperPath(project, paperKey), 'utf8')
+      .catch(() => {
+        throw new ServiceError('NOT_FOUND', `paper.md 未生成（先翻译）：${paperKey}`)
+      })
+    const parsed = parsePaper(markdown)
+    const verify = verifyPaper(markdown, map)
+    return { map, assembled: assembleReading(parsed, verify.states), verify, markdown }
+  }
+
+  /** 译注版分析层（0205 附记四）：全文导读 + 每节【本节速览】/◆精读备注。
+   * 可恢复：已有的节跳过，失败重跑只补缺失；`limit` 限单次生成的节数
+   * （agent 逐批调用 → 每批完成都能向用户报进度）。 */
+  async generateNotes(project: string, paperKey: string, options: { limit?: number } = {}): Promise<{
+    guideReady: boolean
+    total: number
+    done: number
+    pending: number
+    model: string
+  }> {
+    const llm = this.deps.llm()
+    if (llm === undefined) throw new ServiceError('INVALID', '宿主 LLM 不可用：导读/备注无法生成')
+    const { provider, model } = this.deps.llmConfig()
+    const { assembled } = await this.assemble(project, paperKey)
+    const sections = splitSections(assembled.flow)
+    const previous = await this.loadNotes(project, paperKey) ?? emptyNotesFile(model)
+    let guide = previous.guide
+    const sectionsRecord: Record<string, { summary: string; note: string }> = { ...previous.sections }
+    const deps = { llm, provider, model }
+    if (guide === undefined) {
+      const titleParagraph = assembled.flow.find(p => p.kind === 'title')
+      const title = titleParagraph?.translation ?? titleParagraph?.sourceText ?? paperKey
+      const abstract = assembled.flow.find(p => p.kind === 'abstract')?.translation
+      try {
+        guide = await generateGuide(deps, {
+          title,
+          ...(abstract !== undefined ? { abstract } : {}),
+          headings: sections
+            .filter(section => section.headingId !== undefined)
+            .map(section => section.headingTranslation !== undefined ? `${section.headingSource}（${section.headingTranslation}）` : section.headingSource),
+        })
+      } catch { /* 导读失败不阻断节备注；重跑 notes 只补缺失 */ }
+    }
+    const candidates = sections
+      .filter((section): section is typeof section & { headingId: string } =>
+        section.headingId !== undefined && section.paragraphs.some(p => p.translation !== undefined))
+    const missing = candidates.filter(section => sectionsRecord[section.headingId] === undefined)
+    const limit = Math.max(1, Math.min(12, options.limit ?? 6))
+    const limiter = new Limiter(2)
+    await limitedMap(limiter, missing.slice(0, limit), async (section) => {
+      try {
+        sectionsRecord[section.headingId] = await generateSectionNote(deps, section)
+      } catch { /* 单节失败可重跑补 */ }
+    })
+    const notesFile: NotesFile = {
+      version: 1,
+      model,
+      at: new Date().toISOString(),
+      ...(guide !== undefined ? { guide } : {}),
+      sections: sectionsRecord,
+    }
+    await this.writeJson(this.notesPath(project, paperKey), notesFile)
+    const done = candidates.filter(section => sectionsRecord[section.headingId] !== undefined).length
+    return { guideReady: guide !== undefined, total: candidates.length, done, pending: candidates.length - done, model }
+  }
+
   async loadMap(project: string, paperKey: string): Promise<SourceMap | undefined> {
     return await this.readJson<SourceMap>(this.mapPath(project, paperKey))
   }
@@ -181,9 +267,10 @@ export class ReadingService {
     const glossary = await this.loadGlossary(project, paperKey)
     const sources = await this.readJson<Record<string, string>>(join(this.dir(project, paperKey), 'sources.json')) ?? {}
     let cache = await this.readJson<TranslationCache>(this.cachePath(project, paperKey)) ?? emptyCache()
-    const wanted = options.keys !== undefined && options.keys.length > 0
+    const wanted = (options.keys !== undefined && options.keys.length > 0
       ? map.blocks.filter(block => options.keys?.includes(block.id))
       : map.blocks
+    ).filter(block => !UNTRANSLATED_KINDS.has(block.kind))
     const pending = wanted.filter(block => {
       if (options.force === true) return true
       const key = this.keyOf(block, model, glossary)
@@ -287,44 +374,80 @@ export class ReadingService {
     return verifyPaper(markdown, map)
   }
 
-  /** 结果 PDF 归档（readings/<YYYY-MM-DD>/<paperKey>.pdf）：从 paper.md
-   * 渲染双语 PDF 落到项目工作区独立子目录。同日重导覆盖（可再生产物）。 */
+  /** 译注版 PDF 归档（readings/<YYYY-MM-DD>/<paperKey>.pdf）：封面信息表 +
+   * 阅读指南 + 全文导读 + 正文逐段双语（速览/备注盒 + 图内标注）+ 附录
+   * （图表清单/术语对照表/参考文献英文原样/免责说明）。同日重导覆盖。 */
   async exportPdf(project: string, paperKey: string): Promise<{
     path: string
     bytes: number
     summary: { pages: number; blocks: number; translated: number; verified: number; mismatch: number; orphan: number; missing: number }
   }> {
-    const { markdown, verify } = await this.content(project, paperKey)
-    const map = await this.loadMap(project, paperKey)
-    if (map === undefined) throw new ServiceError('NOT_FOUND', `未抽取：${paperKey}`)
-    const parsed = parsePaper(markdown)
-    // 呈现层段落装配：整篇逐段（块级 srcHash/校验/缓存不受影响）
-    const paragraphs = assembleParagraphs(parsed, verify.states)
-    const titleParagraph = paragraphs.find(p => p.kind === 'title') ?? paragraphs[0]
-    const translated = parsed.filter(block => block.translation !== undefined).length
+    const { map, assembled, verify } = await this.assemble(project, paperKey)
+    const { flow, references, figureNotes } = assembled
+    const titleParagraph = flow.find(p => p.kind === 'title')
+    const titleEn = (titleParagraph?.sourceText ?? paperKey).slice(0, 300)
+    const titleZh = (titleParagraph?.translation ?? titleEn).slice(0, 300)
+    // 作者行启发式：title 之后、首个标题行之前的第一段短正文
+    let authors: string | undefined
+    if (titleParagraph !== undefined) {
+      const titleIndex = flow.indexOf(titleParagraph)
+      for (let index = titleIndex + 1; index < flow.length; index += 1) {
+        const paragraph = flow[index]!
+        if (paragraph.kind === 'heading') break
+        if (paragraph.kind === 'para' && paragraph.sourceText.length <= 420) {
+          authors = paragraph.sourceText.slice(0, 300)
+          break
+        }
+      }
+    }
+    const notes = await this.loadNotes(project, paperKey)
+    const glossary = await this.loadGlossary(project, paperKey)
     const model = map.blocks.find(block => block.translation !== undefined)?.translation?.model
+    const translatableIds = new Set(map.blocks.filter(block => !UNTRANSLATED_KINDS.has(block.kind)).map(block => block.id))
+    const translated = map.blocks
+      .filter(block => translatableIds.has(block.id) && block.translation !== undefined).length
+    const verified = verify.verified.filter(id => translatableIds.has(id)).length
+    const mismatch = verify.mismatch.filter(id => translatableIds.has(id)).length
+    const orphan = verify.orphan.filter(id => translatableIds.has(id)).length
+    const missing = Math.max(0, translatableIds.size - verified - mismatch - orphan)
+    const figureList = flow
+      .filter(p => p.kind === 'caption')
+      .map(p => ({ text: p.sourceText, page: map.blocks.find(block => block.id === p.id)?.page ?? 0 }))
     const buffer = await renderReadingPdf({
       paperKey,
-      title: (titleParagraph?.sourceText ?? paperKey).slice(0, 300),
+      titleZh,
+      titleEn,
+      ...(authors !== undefined ? { authors } : {}),
       pdfPath: map.source.pdf,
       exportedAt: new Date().toISOString(),
       ...(model !== undefined ? { model } : {}),
+      ...(Object.keys(glossary.entries).length > 0 ? { glossary: glossary.entries } : {}),
+      ...(notes?.guide !== undefined ? { guide: notes.guide } : {}),
+      ...(notes !== undefined ? { sectionNotes: notes.sections } : {}),
       summary: {
         pages: map.source.pages,
         blocks: map.blocks.length,
         translated,
-        verified: verify.verified.length,
-        mismatch: verify.mismatch.length,
-        orphan: verify.orphan.length,
-        missing: verify.missing.length,
+        verified,
+        mismatch,
+        orphan,
+        missing,
       },
-      paragraphs: paragraphs.map(p => ({
+      flow: flow.map(p => ({
         id: p.id,
         ...(p.kind !== undefined ? { kind: p.kind } : {}),
         state: p.state,
         sourceText: p.sourceText,
         ...(p.translation !== undefined ? { translation: p.translation } : {}),
       })),
+      references: references.map(p => ({
+        id: p.id,
+        ...(p.kind !== undefined ? { kind: p.kind } : {}),
+        state: p.state,
+        sourceText: p.sourceText,
+      })),
+      figureNotes,
+      figureList,
     })
     const now = new Date()
     const day = [
@@ -344,10 +467,10 @@ export class ReadingService {
         pages: map.source.pages,
         blocks: map.blocks.length,
         translated,
-        verified: verify.verified.length,
-        mismatch: verify.mismatch.length,
-        orphan: verify.orphan.length,
-        missing: verify.missing.length,
+        verified,
+        mismatch,
+        orphan,
+        missing,
       },
     }
   }
@@ -355,7 +478,7 @@ export class ReadingService {
   async status(project: string, paperKey: string): Promise<ReadingStatus> {
     const map = await this.loadMap(project, paperKey)
     if (map === undefined) {
-      return { paperKey, extracted: false, pages: 0, blocks: 0, translated: 0, verified: 0, mismatch: 0, orphan: 0, missing: 0, llmAvailable: this.deps.llm() !== undefined }
+      return { paperKey, extracted: false, pages: 0, blocks: 0, translatable: 0, translated: 0, verified: 0, mismatch: 0, orphan: 0, missing: 0, llmAvailable: this.deps.llm() !== undefined }
     }
     let verified = 0
     let mismatch = 0
@@ -367,12 +490,14 @@ export class ReadingService {
       orphan = report.orphan.length
     } catch { /* paper.md 未生成 */ }
     const translated = map.blocks.filter(block => block.translation !== undefined).length
-    const missing = Math.max(0, map.blocks.length - verified - mismatch - orphan)
+    const translatable = map.blocks.filter(block => !UNTRANSLATED_KINDS.has(block.kind)).length
+    const missing = Math.max(0, translatable - verified - mismatch - orphan)
     return {
       paperKey,
       extracted: true,
       pages: map.source.pages,
       blocks: map.blocks.length,
+      translatable,
       translated,
       verified,
       mismatch,

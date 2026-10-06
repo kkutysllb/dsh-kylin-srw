@@ -55,7 +55,8 @@ async function makeService(options: { llm?: boolean } = {}): Promise<{
     llmConfig: () => ({ provider: 'test', model: 'test-model' }),
   })
   const pdf = buildFixturePdf([
-    { x: 60, y: 740, text: 'Attention Is All You Need', size: 16 },
+    // y=726：furniture 带（页缘 62pt）外，否则标题会被判成页眉杂讯
+    { x: 60, y: 726, text: 'Attention Is All You Need', size: 16 },
     ...Array.from({ length: 8 }, (_u, i) => ({ x: 60, y: 700 - i * 14, text: `Body paragraph line ${i} of the first section.` })),
   ])
   await mkdir(join(root, 'proj', 'literature', 'pdf'), { recursive: true })
