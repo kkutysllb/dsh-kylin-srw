@@ -6,6 +6,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ClientContext } from './protocol-client.ts'
 import { DiagView } from './view.tsx'
+import { assembleParagraphs } from '../reading/paragraphs.ts'
 import { parsePaper } from '../reading/render.ts'
 
 const RPC_CHANNEL = '/dsh-kylin-srw'
@@ -85,8 +86,10 @@ interface ReadingStatusLite {
   readonly llmAvailable: boolean
 }
 
-interface ReadingViewBlock {
+interface ReadingViewPara {
   readonly id: string
+  readonly blockIds: readonly string[]
+  readonly kind?: string
   readonly state: 'verified' | 'mismatch' | 'orphan'
   readonly sourceText: string
   readonly translation?: string
@@ -160,7 +163,7 @@ export function WorkbenchView({ ctx }: { readonly ctx: ClientContext }): React.R
   const [readingSelKey, setReadingSelKey] = useState('')
   const [readingKey, setReadingKey] = useState('')
   const [readingStatus, setReadingStatus] = useState<ReadingStatusLite | null>(null)
-  const [readingView, setReadingView] = useState<readonly ReadingViewBlock[] | null>(null)
+  const [readingView, setReadingView] = useState<readonly ReadingViewPara[] | null>(null)
   const [readingBusy, setReadingBusy] = useState(false)
   const [readingNotice, setReadingNotice] = useState<string | null>(null)
   const alive = useRef(true)
@@ -580,11 +583,14 @@ export function WorkbenchView({ ctx }: { readonly ctx: ClientContext }): React.R
         }
       }>(ctx, 'reading.content', { project, paperKey })
       if (!alive.current) return
-      setReadingView(parsePaper(value.markdown).map(block => ({
-        id: block.id,
-        state: value.verify.states[block.id] ?? 'orphan',
-        sourceText: block.sourceText,
-        ...(block.translation !== undefined ? { translation: block.translation } : {}),
+      // 呈现层段落装配：整篇逐段（块级校验/缓存不动）；verified 段不显示任何块痕迹
+      setReadingView(assembleParagraphs(parsePaper(value.markdown), value.verify.states).map(p => ({
+        id: p.id,
+        blockIds: p.blockIds,
+        ...(p.kind !== undefined ? { kind: p.kind } : {}),
+        state: p.state,
+        sourceText: p.sourceText,
+        ...(p.translation !== undefined ? { translation: p.translation } : {}),
       })))
     } catch {
       if (alive.current) setReadingView(null)
@@ -870,7 +876,7 @@ export function WorkbenchView({ ctx }: { readonly ctx: ClientContext }): React.R
 
       <div className='srw-card'>
         <h2>精读{readingStatus !== null ? `：${readingStatus.paperKey}` : ''}</h2>
-        <p className='srw-detail'>PDF 抽块 → 逐块翻译（按哈希缓存）→ 双语对照。校验灯：✓ 源段一致 / ⚠ 源文被改 / 孤立 = 块不在 source_map。译文可随手改，源段动了就会亮 ⚠。</p>
+        <p className='srw-detail'>整篇逐段精读：PDF 抽块 → 逐块翻译（按哈希缓存）→ 段落装配成**连续双语正文**，可导出归档 PDF（readings/&lt;日期&gt;/）。校验在块级做：源段被手改的段会亮 ⚠，其余段落不显示任何标记。</p>
         {readingNotice !== null ? <p className='srw-detail'>{readingNotice}</p> : null}
         {pdfEntries.length === 0 ? (
           <p className='srw-detail'>项目库里还没有带 PDF 的条目——先在上方文献卡「取 PDF」。</p>
@@ -929,15 +935,21 @@ export function WorkbenchView({ ctx }: { readonly ctx: ClientContext }): React.R
         ) : null}
         {readingView !== null ? (
           <ul className='srw-list'>
-            {readingView.map(block => (
-              <li key={block.id} className='srw-item'>
-                <div className='srw-project-main'>
-                  <code>{block.id}</code>
-                  <span className={`srw-badge ${block.state === 'verified' ? '' : 'bad'}`}>{READING_STATE_LABELS[block.state] ?? block.state}</span>
-                </div>
-                <p className='srw-detail' style={{ whiteSpace: 'pre-wrap' }}>{block.sourceText}</p>
-                {block.translation !== undefined ? (
-                  <p style={{ whiteSpace: 'pre-wrap', margin: '4px 0 0' }}>{block.translation}</p>
+            {readingView.map(p => (
+              <li
+                key={p.id}
+                className='srw-item'
+                title={p.blockIds.length > 1 ? `${p.id} 起 ${p.blockIds.length} 个抽取块` : p.id}
+              >
+                {p.state !== 'verified' ? (
+                  <div className='srw-project-main'>
+                    <code>{p.id}</code>
+                    <span className='srw-badge bad'>{READING_STATE_LABELS[p.state] ?? p.state}</span>
+                  </div>
+                ) : null}
+                <p className='srw-detail' style={{ whiteSpace: 'pre-wrap' }}>{p.sourceText}</p>
+                {p.translation !== undefined ? (
+                  <p style={{ whiteSpace: 'pre-wrap', margin: '4px 0 0' }}>{p.translation}</p>
                 ) : null}
               </li>
             ))}

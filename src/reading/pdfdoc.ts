@@ -1,14 +1,15 @@
-/** 精读结果 PDF 归档（用户指令：项目工作区独立子目录、按日期归档）：
- * `readings/<YYYY-MM-DD>/<paperKey>.pdf`。宿主没有 PDF 生成能力 → pdfkit
- * 自带依赖（0102 §7.1.2 同一纪律）。CJK 用系统字体回退链（Hiragino/
- * PingFang/Songti/Arial Unicode/Noto），glyph 子集内嵌——产物可移植，
- * 生成机只要求装有一个候选字体。 */
+/** 精读结果 PDF 归档（0205 附记一/三）：`readings/<YYYY-MM-DD>/<paperKey>.pdf`。
+ * **整篇逐段双语**：段落连续（段落装配层产出），原文一段 + 译文一段，
+ * 标题/标题行分级排版；只有出问题的段才亮 ⚠（verified 段零 chunk 痕迹）。
+ * 宿主没有 PDF 生成能力 → pdfkit 自带依赖（0102 §7.1.2 纪律）；CJK 用系统
+ * 字体回退链（Hiragino/PingFang/Songti/Arial Unicode/Noto），glyph 子集内嵌
+ * ——产物可移植，生成机只要求装有一个候选字体。 */
 
 import { existsSync } from 'node:fs'
 import PDFDocument from 'pdfkit'
 import { ServiceError } from '../service.ts'
 
-export interface PdfBlockInput {
+export interface PdfParagraphInput {
   readonly id: string
   readonly kind?: string
   readonly state: 'verified' | 'mismatch' | 'orphan'
@@ -32,7 +33,7 @@ export interface ReadingPdfInput {
     readonly orphan: number
     readonly missing: number
   }
-  readonly blocks: readonly PdfBlockInput[]
+  readonly paragraphs: readonly PdfParagraphInput[]
 }
 
 const FONT_CANDIDATES: readonly { readonly path: string; readonly name?: string }[] = [
@@ -51,13 +52,13 @@ export function resolveCjkFont(): { readonly path: string; readonly name?: strin
   return undefined
 }
 
-const STATE_LAMPS: Record<PdfBlockInput['state'], string> = {
-  verified: '✓ 源段一致',
-  mismatch: '⚠ 源文被改（译文不保证对应当前源文）',
-  orphan: '孤立块（不在 source_map，禁止引用）',
+const PROBLEM_LABELS: Record<'mismatch' | 'orphan', string> = {
+  mismatch: '⚠ 源文被改（此段译文不保证对应当前源文）',
+  orphan: '⚠ 孤立段（不在 source_map，禁止引用）',
 }
 
-/** 双语 PDF：头部摘要 → 逐块（灯 + 源段 + 译文）→ 页脚页码。 */
+/** 整篇逐段双语 PDF：封面摘要 → 标题/标题行/正文段连续排版（原文段灰、
+ * 译文段黑）→ 页脚页码。 */
 export async function renderReadingPdf(input: ReadingPdfInput): Promise<Buffer> {
   const font = resolveCjkFont()
   if (font === undefined) {
@@ -81,16 +82,33 @@ export async function renderReadingPdf(input: ReadingPdfInput): Promise<Buffer> 
     doc.fontSize(8.5).fillColor('#777777')
     doc.text(`${input.paperKey}${input.pdfPath !== undefined ? ` · ${input.pdfPath}` : ''} · ${s.pages} 页 · 模型 ${input.model ?? '—'}`)
     doc.text(`导出 ${input.exportedAt} · 块 ${s.blocks} · 已译 ${s.translated} · ✓ ${s.verified} / ⚠ ${s.mismatch} / 孤 ${s.orphan} / 丢 ${s.missing}`)
-    doc.moveDown(0.8)
+    doc.moveDown(1)
 
-    for (const block of input.blocks) {
-      doc.fontSize(7.5).fillColor(block.state === 'verified' ? '#999999' : '#b45309')
-      doc.text(`${block.id} · ${STATE_LAMPS[block.state]}${block.kind !== undefined && block.kind !== 'para' ? ` · ${block.kind}` : ''}`)
-      doc.fontSize(9.5).fillColor('#444444').text(block.sourceText, { lineGap: 1.5 })
-      if (block.translation !== undefined && block.translation !== '') {
-        doc.fontSize(10).fillColor('#111111').text(block.translation, { lineGap: 2.5 })
+    for (const paragraph of input.paragraphs) {
+      if (paragraph.state !== 'verified') {
+        doc.fontSize(7.5).fillColor('#b45309')
+          .text(`[${paragraph.id}] ${PROBLEM_LABELS[paragraph.state]}`, { lineGap: 1 })
       }
-      doc.moveDown(0.55)
+      if (paragraph.kind === 'title') {
+        doc.fontSize(16).fillColor('#111111').text(paragraph.sourceText, { lineGap: 4 })
+        if (paragraph.translation !== undefined && paragraph.translation !== '') {
+          doc.fontSize(13).fillColor('#333333').text(paragraph.translation, { lineGap: 3 })
+        }
+        doc.moveDown(0.6)
+      } else if (paragraph.kind === 'heading') {
+        doc.moveDown(0.4)
+        doc.fontSize(12).fillColor('#111111').text(paragraph.sourceText, { lineGap: 2 })
+        if (paragraph.translation !== undefined && paragraph.translation !== '') {
+          doc.fontSize(10.5).fillColor('#555555').text(paragraph.translation, { lineGap: 2 })
+        }
+        doc.moveDown(0.3)
+      } else {
+        doc.fontSize(9.5).fillColor('#444444').text(paragraph.sourceText, { lineGap: 1.5 })
+        if (paragraph.translation !== undefined && paragraph.translation !== '') {
+          doc.fontSize(10.5).fillColor('#111111').text(paragraph.translation, { lineGap: 2.5 })
+        }
+        doc.moveDown(0.55)
+      }
     }
 
     const range = doc.bufferedPageRange()

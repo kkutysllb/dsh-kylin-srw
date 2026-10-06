@@ -10,6 +10,7 @@ import { SLUG_RE } from '../core/schema.ts'
 import { assertInsideRoot, type SrwFsLike } from '../host.ts'
 import { ServiceError } from '../service.ts'
 import { extractPdfBlocks } from './extract.ts'
+import { assembleParagraphs } from './paragraphs.ts'
 import { renderReadingPdf } from './pdfdoc.ts'
 import { cacheKeyOf, emptyCache, lookup, store, type TranslationCache } from './cache.ts'
 import { enforceGlossary, type Glossary } from './glossary.ts'
@@ -297,12 +298,14 @@ export class ReadingService {
     const map = await this.loadMap(project, paperKey)
     if (map === undefined) throw new ServiceError('NOT_FOUND', `未抽取：${paperKey}`)
     const parsed = parsePaper(markdown)
-    const titleBlock = parsed.find(block => block.kind === 'title') ?? parsed[0]
+    // 呈现层段落装配：整篇逐段（块级 srcHash/校验/缓存不受影响）
+    const paragraphs = assembleParagraphs(parsed, verify.states)
+    const titleParagraph = paragraphs.find(p => p.kind === 'title') ?? paragraphs[0]
     const translated = parsed.filter(block => block.translation !== undefined).length
     const model = map.blocks.find(block => block.translation !== undefined)?.translation?.model
     const buffer = await renderReadingPdf({
       paperKey,
-      title: (titleBlock?.sourceText ?? paperKey).slice(0, 300),
+      title: (titleParagraph?.sourceText ?? paperKey).slice(0, 300),
       pdfPath: map.source.pdf,
       exportedAt: new Date().toISOString(),
       ...(model !== undefined ? { model } : {}),
@@ -315,12 +318,12 @@ export class ReadingService {
         orphan: verify.orphan.length,
         missing: verify.missing.length,
       },
-      blocks: parsed.map(block => ({
-        id: block.id,
-        ...(block.kind !== undefined ? { kind: block.kind } : {}),
-        state: verify.states[block.id] ?? 'orphan',
-        sourceText: block.sourceText,
-        ...(block.translation !== undefined ? { translation: block.translation } : {}),
+      paragraphs: paragraphs.map(p => ({
+        id: p.id,
+        ...(p.kind !== undefined ? { kind: p.kind } : {}),
+        state: p.state,
+        sourceText: p.sourceText,
+        ...(p.translation !== undefined ? { translation: p.translation } : {}),
       })),
     })
     const now = new Date()

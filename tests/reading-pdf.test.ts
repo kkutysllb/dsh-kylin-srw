@@ -4,7 +4,7 @@
 
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { mkdir, mkdtemp, readdir, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { resolve as pathResolve } from 'node:path'
@@ -48,13 +48,13 @@ test('pdfdoc：无字体环境明确报 FONT_MISSING（回退链全 miss 时 fai
     () => renderReadingPdf({
       paperKey: 'x', title: 't', exportedAt: 'now',
       summary: { pages: 1, blocks: 0, translated: 0, verified: 0, mismatch: 0, orphan: 0, missing: 0 },
-      blocks: [],
+      paragraphs: [],
     }),
     /FONT_MISSING/,
   )
 })
 
-test('pdfdoc：双语块渲染出合法 PDF（%PDF 头 + 回读文本含源句与译文）', { skip: resolveCjkFont() === undefined ? '本机无 CJK 字体' : false }, async () => {
+test('pdfdoc：整篇逐段双语渲染出合法 PDF（%PDF 头 + 回读文本含源句与译文）', { skip: resolveCjkFont() === undefined ? '本机无 CJK 字体' : false }, async () => {
   const buffer = await renderReadingPdf({
     paperKey: 'arxiv-1706-03762',
     title: 'Attention Is All You Need',
@@ -62,7 +62,7 @@ test('pdfdoc：双语块渲染出合法 PDF（%PDF 头 + 回读文本含源句�
     exportedAt: '2026-10-06T08:00:00.000Z',
     model: 'test-model',
     summary: { pages: 15, blocks: 3, translated: 2, verified: 2, mismatch: 1, orphan: 0, missing: 0 },
-    blocks: [
+    paragraphs: [
       { id: 'p1-b1', kind: 'title', state: 'verified', sourceText: 'Attention Is All You Need', translation: '注意力就是你所需要的一切' },
       { id: 'p1-b2', state: 'verified', sourceText: 'We propose a new simple network architecture, the Transformer.', translation: '我们提出了一种新的简单网络架构——Transformer。' },
       { id: 'p2-b1', state: 'mismatch', sourceText: 'Tampered source paragraph.', translation: '被手改源段的译文' },
@@ -75,7 +75,7 @@ test('pdfdoc：双语块渲染出合法 PDF（%PDF 头 + 回读文本含源句�
   const text = roundtrip.blocks.map(block => block.text).join('\n')
   assert.ok(text.includes('注意力就是你所需要的一切'), '译文未回读')
   assert.ok(text.includes('Transformer'), '源文未回读')
-  assert.ok(text.includes('源文被改'), '校验灯未回读')
+  assert.ok(text.includes('源文被改'), '问题段警示未回读')
 })
 
 test('exportPdf：落 readings/<当日>/<paperKey>.pdf，同日重导覆盖', async () => {
@@ -107,6 +107,13 @@ test('exportPdf：落 readings/<当日>/<paperKey>.pdf，同日重导覆盖', as
     assert.equal(second.path, first.path, '同日重导应同路径覆盖')
     const entries = await readdir(join(root, 'demo/readings'))
     assert.equal(entries.length, 1, '只应有当日一个日期目录')
+
+    // 逐段呈现：verified 段不携带任何块徽章痕迹
+    const { extractPdfBlocks } = await import('../src/reading/extract.ts')
+    const archived = await extractPdfBlocks(new Uint8Array(await readFile(join(root, first.path))))
+    const text = archived.blocks.map(block => block.text).join('\n')
+    assert.ok(!text.includes('源段一致'), 'verified 段不应再渲染块徽章')
+    assert.ok(text.includes('Attention Is All You Need'), '标题源文未回读')
   } finally {
     await rm(root, { recursive: true, force: true })
   }
