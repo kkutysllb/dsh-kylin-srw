@@ -7,7 +7,10 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as nodePath from 'node:path'
 import { readFileSync, existsSync } from 'node:fs'
-import { approvalDecision, callerFrom, srwProjectToolDef, srwLiteratureToolDef, srwWatchToolDef, searchOutputFor, SRW_TOOL_NAME, SRW_LIT_TOOL_NAME, SRW_WATCH_TOOL_NAME } from '../src/tools.ts'
+import { mkdir, writeFile } from 'node:fs/promises'
+import { approvalDecision, callerFrom, srwProjectToolDef, srwLiteratureToolDef, srwWatchToolDef, srwReadToolDef, searchOutputFor, SRW_TOOL_NAME, SRW_LIT_TOOL_NAME, SRW_WATCH_TOOL_NAME, SRW_READ_TOOL_NAME } from '../src/tools.ts'
+import { buildFixturePdf } from './fixture-pdf.ts'
+import type { LlmPort } from '../src/reading/translator.ts'
 import { stripFrontmatter, registerBundledSkills, type SrwSkillsService } from '../src/skills.ts'
 import { SrwService } from '../src/service.ts'
 import { WatchManager } from '../src/watch/binding.ts'
@@ -298,5 +301,91 @@ test('srw_watch 工具：create（绑会话+时钟落任务）→ list → run �
   assertLossless(bad)
   } finally {
     await rm(harness.root, { recursive: true, force: true })
+  }
+})
+
+
+test('srw_read：全部动作豁免审批（授权来自会话显式意图）', () => {
+  for (const action of ['status', 'extract', 'translate', 'export']) {
+    assert.equal(approvalDecision(exec(SRW_READ_TOOL_NAME, { action }), true), undefined, action)
+  }
+})
+
+test('srw_read 工具：status 待译清单 → 分批 translate → remaining 归零 → export 归档', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'srw-read-tool-'))
+  try {
+    const fsLike = {
+      resolve: (rel: string, opts?: { cwd?: string }) => ({ key: nodePath.resolve(opts?.cwd ?? process.cwd(), rel) }),
+      contains: (parent: { key: string }, child: { key: string }) => {
+        const p = nodePath.resolve(parent.key)
+        const c = nodePath.resolve(child.key)
+        return c === p || c.startsWith(`${p}/`)
+      },
+    }
+    const fakeLlm = {
+      stream: async function* (request: Parameters<LlmPort['stream']>[0]) {
+        const src = request.messages[0]?.content[0]?.text ?? ''
+        const body = src.split('<src>')[1]?.split('</src>')[0] ?? ''
+        yield { type: 'text-delta' as const, index: 0, text: `【中译】${body.slice(0, 16)}` }
+        yield { type: 'usage' as const, usage: { totalTokens: 20 } }
+        yield { type: 'finish' as const, reason: { kind: 'stop' } }
+      },
+    } satisfies LlmPort
+    const service = await SrwService.open({
+      fs: fsLike,
+      llm: fakeLlm,
+      agentDefaultModel: { currentSelection: () => ({ provider: 'test', model: 'test-model' }) },
+    }, {})
+    await service.setRoot(root)
+    const def = srwReadToolDef(service)
+    const run = (args: Record<string, unknown>) => def.execute(args, {}) as Promise<{ ok: boolean; value?: Record<string, unknown>; error?: { code: string; message: string } }>
+    try {
+      await mkdir(join(root, 'demo', 'literature', 'pdf'), { recursive: true })
+      const pdf = buildFixturePdf([
+        { x: 60, y: 740, text: 'Attention Is All You Need', size: 16 },
+        ...Array.from({ length: 8 }, (_u, i) => ({ x: 60, y: 700 - i * 14, text: `Body paragraph line ${i} of the reading tool test.` })),
+      ])
+      await writeFile(join(root, 'demo', 'literature', 'pdf', 'tool-paper-123.pdf'), pdf)
+
+      const extracted = await run({ action: 'extract', project: 'demo', paperKey: 'tool-paper', pdfPath: 'literature/pdf/tool-paper-123.pdf' })
+      assert.equal(extracted.ok, true)
+      assert.equal((extracted.value?.blocks as number) >= 2, true)
+      assertLossless(extracted)
+
+      const st1 = await run({ action: 'status', project: 'demo', paperKey: 'tool-paper' })
+      assert.equal(st1.ok, true)
+      const pending1 = st1.value?.pendingIds as string[]
+      assert.equal(pending1.length, st1.value?.blocks, '未译时待译=全部块')
+      const batch1 = pending1.slice(0, 1)
+      const tr1 = await run({ action: 'translate', project: 'demo', paperKey: 'tool-paper', keys: batch1 })
+      assert.equal(tr1.ok, true)
+      assert.equal(tr1.value?.translated, batch1.length)
+      assert.equal((tr1.value?.remaining as number) > 0, true, '分批后仍有剩余')
+      assertLossless(tr1)
+
+      const st2 = await run({ action: 'status', project: 'demo', paperKey: 'tool-paper' })
+      assert.equal((st2.value?.pendingIds as string[]).length, (st2.value?.blocks as number) - batch1.length, 'status 待译清单扣除已译批')
+
+      const tr2 = await run({ action: 'translate', project: 'demo', paperKey: 'tool-paper' })
+      assert.equal(tr2.ok, true)
+      assert.equal(tr2.value?.remaining, 0, '剩余全量翻译后归零')
+
+      const archived = await run({ action: 'export', project: 'demo', paperKey: 'tool-paper' })
+      assert.equal(archived.ok, true)
+      assert.match(String(archived.value?.path), /^demo\/readings\/\d{4}-\d{2}-\d{2}\/tool-paper\.pdf$/)
+      assertLossless(archived)
+
+      const bad = await run({ action: 'status', project: 'demo', paperKey: 'no-such' })
+      assert.equal(bad.ok, true, 'status 未抽取也返回（extracted=false）')
+      assert.equal(bad.value?.extracted, false)
+
+      const unknown = await run({ action: 'nope' })
+      assert.equal(unknown.ok, false)
+      assert.equal(unknown.error?.code, 'INVALID')
+    } finally {
+      await service.dispose()
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true })
   }
 })

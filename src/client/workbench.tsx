@@ -468,19 +468,16 @@ export function WorkbenchView({ ctx }: { readonly ctx: ClientContext }): React.R
     }
   }, [ctx, overview])
 
-  /** 断裂修复：把检索意图合成提示词，经 E1 验证的程序化通路
-   * （retain→binding→conversation.input.for().setDraft+submit）直接发给
-   * 当前会话的 Agent——submit() 立即发送并触发 agent 轮次（E1 实测）。 */
-  const litToAgent = useCallback(async (): Promise<void> => {
-    const query = litQuery.trim()
-    if (query === '') {
-      setError('先填检索词再转给 Agent')
-      return
-    }
+  /** 把自包含提示词发给当前会话的 Agent（引擎车道，litToAgent/精读翻译共用）。
+   * 先 `ctx.layout.selectPanel(null)` 把主区交还会话页（宿主 input shell 需要
+   * **活跃的会话控制器**——面板占主区时 setDraft/submit 实测读 undefined 控制器，
+   * 切换给会话面挂载留 ~400ms），再走 E1 通路（retain→binding→input.for。
+   * setDraft+submit）；两路都断降级剪贴板。返回 'sent' | 'clipboard'。 */
+  const sendToCurrentAgent = useCallback(async (prompt: string): Promise<'sent' | 'clipboard'> => {
     const sessions = ctx.sessions
     if (sessions === undefined || ctx.conversation?.input?.for === undefined) {
       setError('会话输入通路不可达（sessions/conversation 未注入）')
-      return
+      return 'clipboard'
     }
     // 会话 id 主源：uiSession.adapter.current.key（实测返回正确 id 字符串）；
     // sessions.list 的 current 形状不可靠（litToAgent 首版用它导致 retain 挂死）。
@@ -495,23 +492,11 @@ export function WorkbenchView({ ctx }: { readonly ctx: ClientContext }): React.R
     }
     if (current === undefined || current === '') {
       setError('没有打开中的会话——先在左侧开一个会话（agent 任务需要会话承载）')
-      return
+      return 'clipboard'
     }
-    const slug = overview?.activeProject
-    const projectClause = slug !== undefined && slug !== ''
-      ? `入库到项目 ${slug}`
-      : '入库前先用 srw_project 工具确认目标项目（list 后选最合适的，没有就提示我创建）'
-    const prompt = [
-      `请用 srw_literature 工具完成一次文献检索与入库（${litSource} 源）。`,
-      `检索词：${query}。取前 5 条。`,
-      `${projectClause}。`,
-      '完成后简短汇报：新增几条、去重几条、有无撤稿标红。',
-    ].join('')
     type AnyFn = (...args: unknown[]) => unknown
     const withTimeout = async <T,>(promise: Promise<T> | T, ms = 4000): Promise<T> =>
       await Promise.race([Promise.resolve(promise), new Promise<never>((_, reject) => { setTimeout(() => { reject(new Error('timeout')) }, ms) })])
-    // 路径 A（0102 §9.3 原文）：retain→binding。面板占主区时会话面可能未挂载
-    // （ready 永不 resolve——实测），4s 超时降级路径 B；两路都断才报错。
     const tryPath = async (usePathB: boolean): Promise<void> => {
       const anySessions = sessions as unknown as Record<string, unknown>
       let carrier: unknown
@@ -536,26 +521,54 @@ export function WorkbenchView({ ctx }: { readonly ctx: ClientContext }): React.R
       shell.submit()
     }
     try {
+      // 先交还主区再发送：会话页挂载后控制器才活跃（0205 附记实测教训）
+      const layout = (ctx as unknown as { layout?: { selectPanel?: (id: string | null) => void } }).layout
+      layout?.selectPanel?.(null)
+      await new Promise(resolve => { setTimeout(resolve, 400) })
       try {
         await withTimeout(tryPath(false))
       } catch (pathAError) {
-          await withTimeout(tryPath(true))
+        await withTimeout(tryPath(true))
       }
-      if (alive.current) setLitNotice('已把检索任务转给当前会话的 Agent（消息已发送，切到会话页看进展）')
-    } catch (cause) {
-      // 面板占主区时会话面未挂载：宿主 input shell 需要**活跃的会话控制器**
-      // （实测 setDraft/submit 内部读 undefined 控制器的 sessions）。降级：
-      // 提示词进剪贴板——用户到会话输入框粘贴回车即发（Agent 已带工具与通告）。
+      return 'sent'
+    } catch {
+      // 两路都断（极端：切换后仍未挂载）——提示词进剪贴板兜底
       try {
         await navigator.clipboard.writeText(prompt)
-        if (alive.current) {
-          setLitNotice('该会话的输入通路未激活（面板占主区）——提示词已复制到剪贴板，到会话输入框粘贴回车即可发起')
-        }
+        return 'clipboard'
       } catch {
-        if (alive.current) setError(`转给失败：${String(cause)}；请手动在会话输入框描述检索需求（Agent 已带 srw_literature 工具）`)
+        return 'clipboard'
       }
     }
-  }, [ctx, litQuery, litSource, overview])
+  }, [ctx])
+
+  /** 断裂修复：把检索意图合成提示词，经 E1 验证的程序化通路
+   * （retain→binding→conversation.input.for().setDraft+submit）直接发给
+   * 当前会话的 Agent——submit() 立即发送并触发 agent 轮次（E1 实测）。 */
+  const litToAgent = useCallback(async (): Promise<void> => {
+    const query = litQuery.trim()
+    if (query === '') {
+      setError('先填检索词再转给 Agent')
+      return
+    }
+    const slug = overview?.activeProject
+    const projectClause = slug !== undefined && slug !== ''
+      ? `入库到项目 ${slug}`
+      : '入库前先用 srw_project 工具确认目标项目（list 后选最合适的，没有就提示我创建）'
+    const prompt = [
+      `请用 srw_literature 工具完成一次文献检索与入库（${litSource} 源）。`,
+      `检索词：${query}。取前 5 条。`,
+      `${projectClause}。`,
+      '完成后简短汇报：新增几条、去重几条、有无撤稿标红。',
+    ].join('')
+    const outcome = await sendToCurrentAgent(prompt)
+    if (!alive.current) return
+    if (outcome === 'sent') {
+      setLitNotice('已把检索任务转给当前会话的 Agent（消息已发送，切到会话页看进展）')
+    } else {
+      setLitNotice('提示词已复制到剪贴板——到会话输入框粘贴回车即可发起（Agent 已带 srw_literature 工具）')
+    }
+  }, [ctx, litQuery, litSource, overview, sendToCurrentAgent])
 
   /* ── 精读（M4）：抽取 → 逐块翻译（哈希缓存）→ 校验；双语块对照，灯钉块上 ── */
   const loadReadingContent = useCallback(async (project: string, paperKey: string): Promise<void> => {
@@ -602,7 +615,34 @@ export function WorkbenchView({ ctx }: { readonly ctx: ClientContext }): React.R
     void loadReadingAll(project, paperKey)
   }, [overview?.activeProject, readingKey, loadReadingAll])
 
-  const readingAction = async (action: 'extract' | 'translate' | 'verify' | 'export'): Promise<void> => {
+  /** 翻译 = 引擎车道（用户指令：不许插件私有的后台执行）：组装自包含提示词
+   * 发给当前会话的 Agent，由它调 srw_read 分批翻译（每批可见可汇报可中断），
+   * 完成后自动归档当日 PDF。面板只发起，不自己扛长任务。 */
+  const readingTranslateViaAgent = async (): Promise<void> => {
+    const project = overview?.activeProject ?? ''
+    const paperKey = readingKey.trim()
+    if (project === '' || paperKey === '') { setReadingNotice('先打开项目并选择论文'); return }
+    setReadingBusy(true)
+    try {
+      const prompt = [
+        `请精读论文 ${paperKey}（项目 ${project}），全部用 srw_read 工具完成：`,
+        `1) action=status 看总块数与待译清单 pendingIds；`,
+        `2) 分批翻译：每批 ≤40 个 key（pendingIds 按页号 p<页>-b<序> 分组），`,
+        `action=translate 传 keys，每批完成向用户报告一次进度（已译/总数）；`,
+        `3) remaining=0 后 action=export 归档当日 PDF，汇报校验四态（✓/⚠/孤/丢）与归档路径。`,
+        `缓存命中的块不会重复翻译；中断后重发同一指令会接着续译。`,
+      ].join('\n')
+      const outcome = await sendToCurrentAgent(prompt)
+      if (!alive.current) return
+      setReadingNotice(outcome === 'sent'
+        ? '已发起：翻译由当前会话的 Agent 分批执行（已切到会话页），完成后自动归档 PDF'
+        : '提示词已复制到剪贴板——到会话输入框粘贴回车即发起（Agent 已带 srw_read 工具）')
+    } finally {
+      if (alive.current) setReadingBusy(false)
+    }
+  }
+
+  const readingAction = async (action: 'extract' | 'verify' | 'export'): Promise<void> => {
     const project = overview?.activeProject ?? ''
     const paperKey = readingKey.trim()
     if (project === '' || paperKey === '') { setReadingNotice('先打开项目并选择论文'); return }
@@ -615,10 +655,6 @@ export function WorkbenchView({ ctx }: { readonly ctx: ClientContext }): React.R
           ctx, 'reading.extract', { project, paperKey, pdfPath: pdfPathOfEntry(file, project) },
         )
         setReadingNotice(`已抽取：${result.pages} 页 ${result.blocks} 块（迁移 ${result.migrated}，孤儿 ${result.orphan}）`)
-      } else if (action === 'translate') {
-        setReadingNotice('翻译中——逐块走 LLM，首次全量可能要几分钟（缓存命中会跳过）…')
-        const result = await rpc<ReadingStatusLite>(ctx, 'reading.translate', { project, paperKey })
-        setReadingNotice(`翻译完成：已译 ${result.translated}/${result.blocks} 块`)
       } else if (action === 'export') {
         const result = await rpc<{ path: string; bytes: number; summary: { verified: number; mismatch: number; orphan: number; missing: number } }>(
           ctx, 'reading.export', { project, paperKey },
@@ -863,7 +899,12 @@ export function WorkbenchView({ ctx }: { readonly ctx: ClientContext }): React.R
               onChange={event => { setReadingKey(event.target.value) }}
             />
             <button className='srw-btn primary' disabled={readingBusy || readingKey.trim() === ''} onClick={() => { void readingAction('extract') }}>抽取</button>
-            <button className='srw-btn' disabled={readingBusy || readingKey.trim() === ''} onClick={() => { void readingAction('translate') }}>翻译</button>
+            <button
+              className='srw-btn'
+              disabled={readingBusy || readingKey.trim() === ''}
+              title='发给当前会话的 Agent 分批执行（可见进度），完成后自动归档 PDF'
+              onClick={() => { void readingTranslateViaAgent() }}
+            >翻译</button>
             <button className='srw-btn' disabled={readingBusy || readingKey.trim() === ''} onClick={() => { void readingAction('verify') }}>校验</button>
             <button
               className='srw-btn'

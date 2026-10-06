@@ -85,3 +85,9 @@ export declare function watchSummaryFor(sub: {
  * 发生在 create 审批时——时钟唤醒轮必须免问）；create/remove ask。 */
 export declare function srwWatchToolDef(service: SrwService): SrwToolDef;
 export declare function srwLiteratureToolDef(service: SrwService): SrwToolDef;
+/** `srw_read` 工具：精读执行面（0205 附记 / 引擎车道）。全部动作豁免——
+ * 写的是项目域内派生产物（reading/ 与 readings/），授权来自会话里的显式
+ * 意图（面板「翻译」按钮的提示词或用户直接指令）；翻译烧宿主默认模型
+ * token，工具描述把分批协议写成硬纪律（每批 ≤40 块 + 逐批汇报）。 */
+export declare const SRW_READ_TOOL_NAME = "srw_read";
+export declare function srwReadToolDef(service: SrwService): SrwToolDef;

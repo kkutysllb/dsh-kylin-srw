@@ -15,7 +15,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { registerSrwRpc } from './rpc.ts'
 import { SrwService, type SrwConfig } from './service.ts'
-import { approvalDecision, callerFrom, srwProjectToolDef, srwLiteratureToolDef , srwWatchToolDef } from './tools.ts'
+import { approvalDecision, callerFrom, srwProjectToolDef, srwLiteratureToolDef , srwWatchToolDef, srwReadToolDef } from './tools.ts'
 import { registerBundledSkills } from './skills.ts'
 
 export const name = 'dsh-kylin-srw'
@@ -107,7 +107,7 @@ export async function apply(ctx: Context, rawConfig: Config): Promise<void> {
       if (agentTools.has(agentId)) return
       const agentCtx = scoped.ctx
       const registered = agentCtx.effect(() => {
-        const removers = [srwProjectToolDef(service), srwLiteratureToolDef(service), srwWatchToolDef(service)].map(def => agentCtx.tools?.register(def))
+        const removers = [srwProjectToolDef(service), srwLiteratureToolDef(service), srwWatchToolDef(service), srwReadToolDef(service)].map(def => agentCtx.tools?.register(def))
         return () => {
           for (const remove of [...removers].reverse()) {
             if (typeof remove === 'function') void (remove as () => void)()

@@ -449,3 +449,100 @@ export function srwLiteratureToolDef(service: SrwService): SrwToolDef {
     },
   }
 }
+
+/** `srw_read` 工具：精读执行面（0205 附记 / 引擎车道）。全部动作豁免——
+ * 写的是项目域内派生产物（reading/ 与 readings/），授权来自会话里的显式
+ * 意图（面板「翻译」按钮的提示词或用户直接指令）；翻译烧宿主默认模型
+ * token，工具描述把分批协议写成硬纪律（每批 ≤40 块 + 逐批汇报）。 */
+export const SRW_READ_TOOL_NAME = 'srw_read'
+
+/** status 动作返回的待译块 id 上限（防超长输出；超出给 truncated 提示）。 */
+const READ_PENDING_CAP = 600
+
+export function srwReadToolDef(service: SrwService): SrwToolDef {
+  const reading = (): SrwService['reading'] => service.reading
+  const run = async (args: unknown): Promise<Record<string, unknown>> => {
+    const record = typeof args === 'object' && args !== null ? args as Record<string, unknown> : {}
+    const project = typeof record['project'] === 'string' ? record['project'] : ''
+    const paperKey = typeof record['paperKey'] === 'string' ? record['paperKey'] : ''
+    switch (record['action']) {
+      case 'status': {
+        const status = await reading().status(project, paperKey)
+        let pendingIds: string[] = []
+        let pendingTruncated = false
+        // 待译清单直接读 map 的译文元数据（extract 后 paper.md 未生成也能用；
+        // content/verify 要等首轮翻译渲染后才可用）
+        const map = await reading().loadMap(project, paperKey)
+        if (map !== undefined) {
+          pendingIds = map.blocks
+            .filter(block => block.translation === undefined)
+            .map(block => block.id)
+          if (pendingIds.length > READ_PENDING_CAP) {
+            pendingIds = pendingIds.slice(0, READ_PENDING_CAP)
+            pendingTruncated = true
+          }
+        }
+        return {
+          ...status,
+          pendingIds,
+          ...(pendingTruncated ? { hint: `待译块超过 ${READ_PENDING_CAP}，只列了前 ${READ_PENDING_CAP}——按页号分批，译完一批再用 status 刷新` } : {}),
+          ...(status.extracted && pendingIds.length > 0 ? { hint: '分批翻译：每批 ≤40 个 key（按页号 p<页>-b<序> 分组），逐批调 translate 并向用户报进度' } : {}),
+          ...(status.extracted && status.translated >= status.blocks && status.mismatch === 0 ? { hint: '全部已译——可直接 action=export 归档' } : {}),
+        }
+      }
+      case 'extract': {
+        const pdfPath = typeof record['pdfPath'] === 'string' ? record['pdfPath'] : ''
+        const result = await reading().extract(project, paperKey, pdfPath)
+        return { ...result, hint: '抽取完成；action=status 看待译清单，或直接分批 translate' }
+      }
+      case 'translate': {
+        const rawKeys = record['keys']
+        const keys = Array.isArray(rawKeys) ? rawKeys.filter((item): item is string => typeof item === 'string') : undefined
+        const status = await reading().translate(project, paperKey, { ...(keys !== undefined && keys.length > 0 ? { keys } : {}) })
+        const remaining = Math.max(0, status.blocks - status.translated + status.mismatch)
+        return {
+          ...status,
+          remaining,
+          hint: remaining > 0
+            ? `还有 ${remaining} 块待译——继续下一批（每批 ≤40 keys），每批完成向用户报一次进度`
+            : '全部已译——向用户汇报最终校验四态，然后 action=export 归档当日 PDF',
+        }
+      }
+      case 'export': {
+        return await reading().exportPdf(project, paperKey)
+      }
+      default:
+        throw new ServiceError('INVALID', `未知 action：${JSON.stringify(record['action'])}`)
+    }
+  }
+  return {
+    name: SRW_READ_TOOL_NAME,
+    description: [
+      '精读执行面（科研工作台）：把项目文献库里的 PDF 抽成块（extract）、逐块 LLM 翻译成中文',
+      '（translate，带哈希缓存——重复调用只译新增/被改块）、查进度（status，含待译块清单）、',
+      '把双语结果按日期归档成 PDF（export，落 readings/<日期>/）。',
+      '翻译纪律：每批 ≤40 个块 id（按页号分组），逐批调用并向用户报告进度；不要一次整篇',
+      '（长论文会超时）。需要项目已存在、条目已取 PDF；LLM 用宿主默认模型。',
+    ].join(''),
+    parameters: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['status', 'extract', 'translate', 'export'], description: '要执行的动作' },
+        project: { type: 'string', description: '项目 slug' },
+        paperKey: { type: 'string', description: '论文 key（reading/<paperKey> 目录名，如 arxiv-1706-03762）' },
+        pdfPath: { type: 'string', description: 'extract 必填：PDF 在项目内的相对路径（如 literature/pdf/xxx.pdf）' },
+        keys: { type: 'array', items: { type: 'string' }, description: 'translate 可选：本批要译的块 id（≤40 个，来自 status 的 pendingIds）' },
+      },
+      required: ['action'],
+    },
+    output: { schema: { type: 'object' }, render: jsonRender },
+    timeoutMs: 300_000,
+    execute: async (args) => {
+      try {
+        return { ok: true, value: await run(args) }
+      } catch (error: unknown) {
+        return toolEnvelope(error)
+      }
+    },
+  }
+}
