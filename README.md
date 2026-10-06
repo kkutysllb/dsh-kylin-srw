@@ -23,7 +23,7 @@
 | [0202 M1 详细计划](docs/02-plan/0202-M1-工作区与项目.md) | Task 1.0–1.7 bite-sized（注入面验证矩阵 / root.json + settings.section 转正 / workspace 模块 / srw_index v1 / R2 端点 / 工作台视图 / srw_project 工具）；M1 验收 7 断言；settings.register 走 V15 后置的决策记录 |
 | [0203 M2 详细计划](docs/02-plan/0203-M2-文献通路.md) | RateGate / 三源适配 / 去重 / library.json / PDF+SSRF / BibTeX / 撤稿 / 文献视图+工具；**已完成**，文末「M2 实施实录」含 9 条真网/实测勘误（含 lossless 工具输出、元数据自愈、跨源身份折叠） |
 | [0204 M3 计划](docs/02-plan/0204-M3-定期抓取.md) | 订阅抓取（触发绑宿主内置「自动化任务」ctx.schedule，执行=host 确定性代码）/ .srw/watch.json / srw_watch 工具 / 撤稿类型区分（corrigendum≠retraction）；**已完成**，文末「M3 实施实录」含 Cordis 围栏等 4 条勘误 |
-| [0205 M4 计划](docs/02-plan/0205-M4-精读.md) | 精读（R6 尖刀）：pdfjs 抽取/双栏识别/source_map 稳定块 ID/翻译链（llm.stream+并发闸）/哈希缓存+术语表/paper.md+校验门/精读视图；**进行中** |
+| [0205 M4 计划](docs/02-plan/0205-M4-精读.md) | 精读（R6 尖刀）：pdfjs 抽取/双栏识别/source_map 稳定块 ID/翻译链（llm.stream+并发闸）/哈希缓存+术语表/paper.md+校验门/精读视图；**已完成**，文末「M4 实施实录」含活体验收（vaswani 真 PDF 端到端全绿）与 2 条勘误 |
 
 ## 定位（一句话）
 
