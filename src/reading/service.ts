@@ -10,9 +10,10 @@ import { SLUG_RE } from '../core/schema.ts'
 import { assertInsideRoot, type SrwFsLike } from '../host.ts'
 import { ServiceError } from '../service.ts'
 import { extractPdfBlocks } from './extract.ts'
+import { renderReadingPdf } from './pdfdoc.ts'
 import { cacheKeyOf, emptyCache, lookup, store, type TranslationCache } from './cache.ts'
 import { enforceGlossary, type Glossary } from './glossary.ts'
-import { renderPaperWithSources } from './render.ts'
+import { renderPaperWithSources, parsePaper } from './render.ts'
 import { buildSourceMap, migrateBlocks, SOURCE_MAP_VERSION, type SourceMap, type SourceMapBlock } from './source-map.ts'
 import { translateBlocks, type LlmPort } from './translator.ts'
 export type { LlmPort }
@@ -283,6 +284,69 @@ export class ReadingService {
       throw new ServiceError('NOT_FOUND', `paper.md 未生成：${paperKey}`)
     }
     return verifyPaper(markdown, map)
+  }
+
+  /** 结果 PDF 归档（readings/<YYYY-MM-DD>/<paperKey>.pdf）：从 paper.md
+   * 渲染双语 PDF 落到项目工作区独立子目录。同日重导覆盖（可再生产物）。 */
+  async exportPdf(project: string, paperKey: string): Promise<{
+    path: string
+    bytes: number
+    summary: { pages: number; blocks: number; translated: number; verified: number; mismatch: number; orphan: number; missing: number }
+  }> {
+    const { markdown, verify } = await this.content(project, paperKey)
+    const map = await this.loadMap(project, paperKey)
+    if (map === undefined) throw new ServiceError('NOT_FOUND', `未抽取：${paperKey}`)
+    const parsed = parsePaper(markdown)
+    const titleBlock = parsed.find(block => block.kind === 'title') ?? parsed[0]
+    const translated = parsed.filter(block => block.translation !== undefined).length
+    const model = map.blocks.find(block => block.translation !== undefined)?.translation?.model
+    const buffer = await renderReadingPdf({
+      paperKey,
+      title: (titleBlock?.sourceText ?? paperKey).slice(0, 300),
+      pdfPath: map.source.pdf,
+      exportedAt: new Date().toISOString(),
+      ...(model !== undefined ? { model } : {}),
+      summary: {
+        pages: map.source.pages,
+        blocks: map.blocks.length,
+        translated,
+        verified: verify.verified.length,
+        mismatch: verify.mismatch.length,
+        orphan: verify.orphan.length,
+        missing: verify.missing.length,
+      },
+      blocks: parsed.map(block => ({
+        id: block.id,
+        ...(block.kind !== undefined ? { kind: block.kind } : {}),
+        state: verify.states[block.id] ?? 'orphan',
+        sourceText: block.sourceText,
+        ...(block.translation !== undefined ? { translation: block.translation } : {}),
+      })),
+    })
+    const now = new Date()
+    const day = [
+      String(now.getFullYear()).padStart(4, '0'),
+      String(now.getMonth() + 1).padStart(2, '0'),
+      String(now.getDate()).padStart(2, '0'),
+    ].join('-')
+    const relPath = join(project, 'readings', day, `${paperKey}.pdf`)
+    const absPath = join(this.requireRoot(), relPath)
+    await this.guard(absPath)
+    await mkdir(absPath.slice(0, absPath.lastIndexOf('/')), { recursive: true })
+    await writeFile(absPath, buffer)
+    return {
+      path: relPath,
+      bytes: buffer.length,
+      summary: {
+        pages: map.source.pages,
+        blocks: map.blocks.length,
+        translated,
+        verified: verify.verified.length,
+        mismatch: verify.mismatch.length,
+        orphan: verify.orphan.length,
+        missing: verify.missing.length,
+      },
+    }
   }
 
   async status(project: string, paperKey: string): Promise<ReadingStatus> {

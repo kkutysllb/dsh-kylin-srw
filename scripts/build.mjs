@@ -8,7 +8,7 @@
  *   resolved through the shell's static module table.
  */
 
-import { copyFile, readFile, rm, writeFile } from 'node:fs/promises'
+import { copyFile, cp, readFile, rm, writeFile } from 'node:fs/promises'
 import { build } from 'esbuild'
 import ts from 'typescript'
 
@@ -25,6 +25,7 @@ const program = ts.createProgram({
     module: ts.ModuleKind.ESNext,
     moduleResolution: ts.ModuleResolutionKind.Bundler,
     allowImportingTsExtensions: true,
+    allowSyntheticDefaultImports: true,
     lib: ['lib.es2023.d.ts', 'lib.dom.d.ts', 'lib.dom.iterable.d.ts'],
     jsx: ts.JsxEmit.ReactJSX,
     strict: true,
@@ -96,5 +97,10 @@ for (const file of ['lib/index.js', 'lib/client.js']) {
 // pdfjs 打进 host bundle 后，Node 侧 fallback worker 路径解析到 bundle 同目录
 // 的 pdf.worker.mjs（实测缺它即 "Setting up fake worker failed"）——随构建复制。
 await copyFile('node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs', 'lib/pdf.worker.mjs')
+
+// pdfkit 的标准字体 AFM 走运行时 require('#standard-fonts/*')：ESM bundle 里
+// 该 require 经 createRequire 解析到包根 package.json 的 imports 字段
+// （Node 禁止 imports 目标指向 node_modules，故复制到 lib/ 再映射）。
+await cp('node_modules/pdfkit/js/standard-fonts', 'lib/pdfkit-standard-fonts', { recursive: true })
 
 console.log(`[${PACKAGE_ID}] built Host and Web client bundles`)

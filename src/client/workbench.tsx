@@ -602,7 +602,7 @@ export function WorkbenchView({ ctx }: { readonly ctx: ClientContext }): React.R
     void loadReadingAll(project, paperKey)
   }, [overview?.activeProject, readingKey, loadReadingAll])
 
-  const readingAction = async (action: 'extract' | 'translate' | 'verify'): Promise<void> => {
+  const readingAction = async (action: 'extract' | 'translate' | 'verify' | 'export'): Promise<void> => {
     const project = overview?.activeProject ?? ''
     const paperKey = readingKey.trim()
     if (project === '' || paperKey === '') { setReadingNotice('先打开项目并选择论文'); return }
@@ -619,6 +619,13 @@ export function WorkbenchView({ ctx }: { readonly ctx: ClientContext }): React.R
         setReadingNotice('翻译中——逐块走 LLM，首次全量可能要几分钟（缓存命中会跳过）…')
         const result = await rpc<ReadingStatusLite>(ctx, 'reading.translate', { project, paperKey })
         setReadingNotice(`翻译完成：已译 ${result.translated}/${result.blocks} 块`)
+      } else if (action === 'export') {
+        const result = await rpc<{ path: string; bytes: number; summary: { verified: number; mismatch: number; orphan: number; missing: number } }>(
+          ctx, 'reading.export', { project, paperKey },
+        )
+        setReadingNotice(
+          `已归档：${result.path}（${Math.round(result.bytes / 1024)} KB · ✓ ${result.summary.verified} / ⚠ ${result.summary.mismatch} / 孤 ${result.summary.orphan} / 丢 ${result.summary.missing}）`,
+        )
       } else {
         const result = await rpc<{ verified: readonly string[]; mismatch: readonly string[]; orphan: readonly string[]; missing: readonly string[] }>(
           ctx, 'reading.verify', { project, paperKey },
@@ -858,6 +865,12 @@ export function WorkbenchView({ ctx }: { readonly ctx: ClientContext }): React.R
             <button className='srw-btn primary' disabled={readingBusy || readingKey.trim() === ''} onClick={() => { void readingAction('extract') }}>抽取</button>
             <button className='srw-btn' disabled={readingBusy || readingKey.trim() === ''} onClick={() => { void readingAction('translate') }}>翻译</button>
             <button className='srw-btn' disabled={readingBusy || readingKey.trim() === ''} onClick={() => { void readingAction('verify') }}>校验</button>
+            <button
+              className='srw-btn'
+              disabled={readingBusy || readingKey.trim() === ''}
+              title='按日期归档双语结果 PDF 到项目 readings/ 目录'
+              onClick={() => { void readingAction('export') }}
+            >导出 PDF</button>
           </div>
         )}
         {readingStatus !== null ? (

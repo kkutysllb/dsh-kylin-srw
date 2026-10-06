@@ -72,5 +72,20 @@ export declare class ReadingService {
         verify: VerifyReport;
     }>;
     verify(project: string, paperKey: string): Promise<VerifyReport>;
+    /** 结果 PDF 归档（readings/<YYYY-MM-DD>/<paperKey>.pdf）：从 paper.md
+     * 渲染双语 PDF 落到项目工作区独立子目录。同日重导覆盖（可再生产物）。 */
+    exportPdf(project: string, paperKey: string): Promise<{
+        path: string;
+        bytes: number;
+        summary: {
+            pages: number;
+            blocks: number;
+            translated: number;
+            verified: number;
+            mismatch: number;
+            orphan: number;
+            missing: number;
+        };
+    }>;
     status(project: string, paperKey: string): Promise<ReadingStatus>;
 }
