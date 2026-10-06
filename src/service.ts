@@ -13,6 +13,7 @@ import { readRootConfig, writeRootConfig } from './workspace/root.ts'
 import { openSrwIndex, type SrwIndexDomain, type SrwIndexGlobal } from './store.ts'
 import { attachLiterature, type LiteratureService } from './literature/service.ts'
 import { attachWatch, type WatchManager } from './watch/binding.ts'
+import { type LlmPort, ReadingService } from './reading/service.ts'
 /** 与 package.json 同步维护；diag.caps 的 info.version 数据源。 */
 export const SRW_VERSION = '0.0.1'
 
@@ -39,6 +40,19 @@ export interface SrwInfo {
   readonly offlineMode: boolean
   readonly rootDir: string
   readonly home: { readonly channel: string; readonly home: string }
+}
+
+
+/** 反射通道读服务：先走属性访问（inject 名单内的正路），被围栏拦则退
+ * `ctx.reflect.get`（全局注册表读法）。0204 勘误 1 的通用化。 */
+export function reflectService(ctx: unknown, name: string): unknown {
+  try {
+    const direct = (ctx as Record<string, unknown>)[name]
+    if (direct !== undefined && direct !== null) return direct
+  } catch { /* 围栏拦下，走 reflect */ }
+  const reflect = (ctx as { reflect?: { get?: (name: string, strict?: boolean) => unknown } }).reflect
+  const value = reflect?.get?.(name)
+  return value === null ? undefined : value
 }
 
 export class SrwService {
@@ -71,6 +85,28 @@ export class SrwService {
   get watch(): WatchManager {
     if (this.watchRef === undefined) this.watchRef = attachWatch(this, () => this.literature)
     return this.watchRef
+  }
+
+  private readingRef: ReadingService | undefined
+  /** 精读域（M4：extract→translate→render→verify）。LLM/默认模型经反射
+   * 通道可选（缺席 → 翻译降级）。 */
+  get reading(): ReadingService {
+    if (this.readingRef === undefined) {
+      this.readingRef = new ReadingService({
+        fs: (this.ctx as { fs?: SrwFsLike }).fs,
+        rootDir: () => this.currentRoot(),
+        llm: () => reflectService(this.ctx, 'llm') as LlmPort | undefined,
+        llmConfig: () => {
+          const adm = reflectService(this.ctx, 'agentDefaultModel') as { currentSelection?: () => { provider?: unknown; model?: unknown } } | undefined
+          const selection = adm?.currentSelection?.()
+          if (typeof selection?.provider === 'string' && typeof selection?.model === 'string' && selection.provider !== '' && selection.model !== '') {
+            return { provider: selection.provider, model: selection.model }
+          }
+          throw new ServiceError('NO_PROVIDER', '宿主未配置默认模型（agentDefaultModel 缺席）——先在会话里选一次模型')
+        },
+      })
+    }
+    return this.readingRef
   }
 
   static async open(ctx: unknown, rawConfig: SrwConfig): Promise<SrwService> {
@@ -219,7 +255,7 @@ export class SrwService {
     return undefined
   }
 
-  /** 轻量探活（`diag.ping` 端点）。 */
+/** 轻量探活（`diag.ping` 端点）。 */
   ping(): { readonly pong: true; readonly at: string; readonly uptimeMs: number } {
     return { pong: true, at: new Date().toISOString(), uptimeMs: Date.now() - this.startedAt }
   }

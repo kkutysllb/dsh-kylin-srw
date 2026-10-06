@@ -344,6 +344,39 @@ export async function handleSrwRpc(
         const body = record(payload)
         return ok(await service.watch.run(reqString(body, 'id')))
       }
+      // ── M4 精读（0205）：抽取→翻译→渲染→校验 ──
+      case 'reading.extract': {
+        const body = record(payload)
+        return ok(await service.reading.extract(reqString(body, 'project'), reqString(body, 'paperKey'), reqString(body, 'pdfPath')))
+      }
+      case 'reading.translate': {
+        const body = record(payload)
+        const keys = body['keys']
+        const force = body['force']
+        return ok(await service.reading.translate(reqString(body, 'project'), reqString(body, 'paperKey'), {
+          ...(Array.isArray(keys) ? { keys: keys.filter((item): item is string => typeof item === 'string') } : {}),
+          ...(force === true ? { force: true } : {}),
+        }))
+      }
+      case 'reading.status':
+        return ok(await service.reading.status(reqString(record(payload), 'project'), reqString(record(payload), 'paperKey')))
+      case 'reading.verify': {
+        const body = record(payload)
+        return ok(await service.reading.verify(reqString(body, 'project'), reqString(body, 'paperKey')))
+      }
+      case 'reading.glossary': {
+        const body = record(payload)
+        const entries = body['entries']
+        if (typeof entries !== 'object' || entries === null || Array.isArray(entries)) {
+          throw new ServiceError('INVALID', 'entries 必须是 { 术语: 译名 } 对象')
+        }
+        return ok(await service.reading.setGlossary(
+          reqString(body, 'project'),
+          reqString(body, 'paperKey'),
+          Object.fromEntries(Object.entries(entries as Record<string, unknown>)
+            .filter((row): row is [string, string] => typeof row[1] === 'string')),
+        ))
+      }
       default:
         return fail('not-found', `unknown endpoint ${JSON.stringify(endpoint)}`)
     }

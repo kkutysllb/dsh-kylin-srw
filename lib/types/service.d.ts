@@ -10,6 +10,7 @@ import { WorkspaceStore } from './workspace/project.ts';
 import { type SrwIndexGlobal } from './store.ts';
 import { type LiteratureService } from './literature/service.ts';
 import { type WatchManager } from './watch/binding.ts';
+import { ReadingService } from './reading/service.ts';
 /** 与 package.json 同步维护；diag.caps 的 info.version 数据源。 */
 export declare const SRW_VERSION = "0.0.1";
 export interface SrwConfig {
@@ -31,6 +32,9 @@ export interface SrwInfo {
         readonly home: string;
     };
 }
+/** 反射通道读服务：先走属性访问（inject 名单内的正路），被围栏拦则退
+ * `ctx.reflect.get`（全局注册表读法）。0204 勘误 1 的通用化。 */
+export declare function reflectService(ctx: unknown, name: string): unknown;
 export declare class SrwService {
     /** 宿主 ctx（软探测只读使用；领域模块不得经它绕过本服务）。 */
     readonly ctx: unknown;
@@ -52,6 +56,10 @@ export declare class SrwService {
     private watchRef;
     /** 订阅抓取（M3：触发绑内置自动化任务 ctx.schedule，执行是本插件 host 代码）。 */
     get watch(): WatchManager;
+    private readingRef;
+    /** 精读域（M4：extract→translate→render→verify）。LLM/默认模型经反射
+     * 通道可选（缺席 → 翻译降级）。 */
+    get reading(): ReadingService;
     static open(ctx: unknown, rawConfig: SrwConfig): Promise<SrwService>;
     /** 挂上域 handle 并把持久 rootDir 收编进内存判定（config 仍优先）。 */
     private attachIndex;
