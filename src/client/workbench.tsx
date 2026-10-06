@@ -3,7 +3,7 @@
  * 轮询只打 `overview`（5s，页面隐藏时暂停）；项目数据经 `root.get`。
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ClientContext } from './protocol-client.ts'
 import { DiagView } from './view.tsx'
 import { parsePaper } from '../reading/render.ts'
@@ -641,7 +641,21 @@ export function WorkbenchView({ ctx }: { readonly ctx: ClientContext }): React.R
 
   const activeStage = overview?.activeStage
   const rootDir = overview?.rootDir ?? ''
-  const pdfEntries = libEntries.filter(entry => entry.pdf !== undefined)
+  const pdfEntries = useMemo(() => libEntries.filter(entry => entry.pdf !== undefined), [libEntries])
+
+  /* 首屏/换项目后自动带出第一条候选的 paperKey（否则三按钮全禁用，
+   * 必须徒手碰一下下拉才有值——实测别扭）。只在 libEntries 变化时补一次，
+   * 不干扰用户手动清空重输。 */
+  const lastLibRef = useRef<readonly LibEntryLite[] | undefined>(undefined)
+  useEffect(() => {
+    if (lastLibRef.current === libEntries) return
+    lastLibRef.current = libEntries
+    const first = pdfEntries[0]
+    if (first !== undefined && readingKey.trim() === '') {
+      setReadingKey(paperKeyOfLite(first.key))
+      setReadingSelKey(first.key)
+    }
+  }, [libEntries, pdfEntries, readingKey])
 
   return (
     <div className='srw-panel'>

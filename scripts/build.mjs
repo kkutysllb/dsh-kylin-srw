@@ -8,7 +8,7 @@
  *   resolved through the shell's static module table.
  */
 
-import { readFile, rm, writeFile } from 'node:fs/promises'
+import { copyFile, readFile, rm, writeFile } from 'node:fs/promises'
 import { build } from 'esbuild'
 import ts from 'typescript'
 
@@ -92,5 +92,9 @@ for (const file of ['lib/index.js', 'lib/client.js']) {
   const source = await readFile(file, 'utf8')
   await writeFile(file, source.replace(/[ \t]+$/gm, ''))
 }
+
+// pdfjs 打进 host bundle 后，Node 侧 fallback worker 路径解析到 bundle 同目录
+// 的 pdf.worker.mjs（实测缺它即 "Setting up fake worker failed"）——随构建复制。
+await copyFile('node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs', 'lib/pdf.worker.mjs')
 
 console.log(`[${PACKAGE_ID}] built Host and Web client bundles`)
