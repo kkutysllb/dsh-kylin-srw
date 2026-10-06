@@ -5,9 +5,11 @@ export type TeXEngine = 'tectonic' | 'latexmk' | 'xelatex' | 'pdflatex';
 /** 探测序即编译优先序：tectonic 自包含免多轮；latexmk 管多轮；裸 xelatex/
  * pdflatex 需自管重跑。 */
 export declare const ENGINE_ORDER: readonly TeXEngine[];
-/** 进程执行端口：`command args…`，非零退出码抛错；测试注入假 runner。 */
+/** 进程执行端口：`command args…`（cwd 固定在 paper/），非零退出码抛错；
+ * 测试注入假 runner。 */
 export type RunPort = (command: string, args: readonly string[], options: {
     timeoutMs: number;
+    cwd: string;
 }) => Promise<{
     stdout: string;
     stderr: string;

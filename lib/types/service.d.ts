@@ -11,6 +11,7 @@ import { type SrwIndexGlobal } from './store.ts';
 import { type LiteratureService } from './literature/service.ts';
 import { type WatchManager } from './watch/binding.ts';
 import { ReadingService } from './reading/service.ts';
+import { WriterService } from './writer/service.ts';
 /** 与 package.json 同步维护；diag.caps 的 info.version 数据源。 */
 export declare const SRW_VERSION = "0.0.1";
 export interface SrwConfig {
@@ -60,6 +61,10 @@ export declare class SrwService {
     /** 精读域（M4：extract→translate→render→verify）。LLM/默认模型经反射
      * 通道可选（缺席 → 翻译降级）。 */
     get reading(): ReadingService;
+    private writerRef;
+    /** 论文线（M5：骨架/大纲 G1/编译/快照/审计/合规）。进程执行用真实
+     * runner；文献库条目读取走 literature 域。 */
+    get writer(): WriterService;
     static open(ctx: unknown, rawConfig: SrwConfig): Promise<SrwService>;
     /** 挂上域 handle 并把持久 rootDir 收编进内存判定（config 仍优先）。 */
     private attachIndex;

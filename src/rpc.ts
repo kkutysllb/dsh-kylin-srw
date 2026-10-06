@@ -385,6 +385,67 @@ export async function handleSrwRpc(
             .filter((row): row is [string, string] => typeof row[1] === 'string')),
         ))
       }
+      // ── M5 论文线（0206）：venue/骨架/大纲 G1/编译/快照/审计/合规 ──
+      case 'paper.state':
+        return ok(await service.writer.state(reqString(record(payload), 'project')))
+      case 'venue.list':
+        return ok({ venues: service.writer.venueList() })
+      case 'venue.apply': {
+        const body = record(payload)
+        const tier = body['tier']
+        return ok(await service.writer.venueApply(
+          reqString(body, 'project'),
+          reqString(body, 'venueId'),
+          tier === 'D1' || tier === 'D2' || tier === 'D3' ? tier : undefined,
+        ))
+      }
+      case 'paper.scaffold': {
+        const body = record(payload)
+        const authors = body['authors']
+        const abstract = body['abstract']
+        return ok(await service.writer.scaffold(reqString(body, 'project'), {
+          title: reqString(body, 'title'),
+          ...(typeof authors === 'string' ? { authors } : {}),
+          ...(typeof abstract === 'string' ? { abstract } : {}),
+        }))
+      }
+      case 'paper.outline.get': {
+        const body = record(payload)
+        return ok(await service.writer.outlineGet(reqString(body, 'project')) ?? { status: 'none', revision: 0, sections: [] })
+      }
+      case 'paper.outline.save': {
+        const body = record(payload)
+        const sections = body['sections']
+        if (!Array.isArray(sections)) throw new ServiceError('INVALID', 'sections 必须是数组')
+        return ok(await service.writer.outlineSave(reqString(body, 'project'), sections.map((item: unknown) => {
+          const section = typeof item === 'object' && item !== null ? item as Record<string, unknown> : {}
+          return {
+            title: typeof section['title'] === 'string' ? section['title'] : '',
+            intent: typeof section['intent'] === 'string' ? section['intent'] : '',
+            ...(typeof section['targetWords'] === 'number' ? { targetWords: section['targetWords'] } : {}),
+          }
+        }).filter(section => section.title !== '')))
+      }
+      case 'paper.outline.confirm':
+        return ok(await service.writer.outlineConfirm(reqString(record(payload), 'project')))
+      case 'paper.compile':
+        return ok(await service.writer.compile(reqString(record(payload), 'project')))
+      case 'paper.citeAudit':
+        return ok(await service.writer.citeAudit(reqString(record(payload), 'project')))
+      case 'paper.refsAppend': {
+        const body = record(payload)
+        const keys = body['keys']
+        if (!Array.isArray(keys)) throw new ServiceError('INVALID', 'keys 必须是数组')
+        return ok(await service.writer.refsAppend(reqString(body, 'project'), keys.filter((item): item is string => typeof item === 'string')))
+      }
+      case 'paper.snapshot.list':
+        return ok(await service.writer.snapshotList(reqString(record(payload), 'project')))
+      case 'paper.snapshot.restore': {
+        const body = record(payload)
+        return ok(await service.writer.snapshotRestore(reqString(body, 'project'), reqString(body, 'id')))
+      }
+      case 'paper.compliance':
+        return ok(await service.writer.compliance(reqString(record(payload), 'project')))
       default:
         return fail('not-found', `unknown endpoint ${JSON.stringify(endpoint)}`)
     }

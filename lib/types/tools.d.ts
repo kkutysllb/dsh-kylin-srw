@@ -85,6 +85,13 @@ export declare function watchSummaryFor(sub: {
  * 发生在 create 审批时——时钟唤醒轮必须免问）；create/remove ask。 */
 export declare function srwWatchToolDef(service: SrwService): SrwToolDef;
 export declare function srwLiteratureToolDef(service: SrwService): SrwToolDef;
+/** `srw_paper` 工具：论文线执行面（M5）。全部动作豁免审批——写的是项目域内
+ * paper/ 与 .srw/{venue,outline}.json；大纲/正文内容由会话里的 Agent 自己
+ * 起草（agent 车道：工具只做 IO + 门），G1 确认门在服务层硬编码——未确认
+ * 的大纲 section.write 直接拒绝。编译是本机进程（TeX 引擎全缺时报
+ * ENGINE_MISSING + 安装引导，不算工具失败）。 */
+export declare const SRW_PAPER_TOOL_NAME = "srw_paper";
+export declare function srwPaperToolDef(service: SrwService): SrwToolDef;
 /** `srw_read` 工具：精读执行面（0205 附记 / 引擎车道）。全部动作豁免——
  * 写的是项目域内派生产物（reading/ 与 readings/），授权来自会话里的显式
  * 意图（面板「翻译」按钮的提示词或用户直接指令）；翻译烧宿主默认模型

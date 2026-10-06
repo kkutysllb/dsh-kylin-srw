@@ -70,6 +70,7 @@ test('compile：tectonic 单轮成功；latexmk Rerun 提示触发重跑（≤2�
   const tectonic = await compilePaper({
     engine: 'tectonic',
     entry: 'main.tex',
+    cwd: '/tmp/srw-test-paper',
     run: async (command, args) => ({ stdout: `${command} ${args.join(' ')}\n${tectonicLog}`, stderr: '' }),
   })
   assert.equal(tectonic.ok, true)
@@ -80,6 +81,7 @@ test('compile：tectonic 单轮成功；latexmk Rerun 提示触发重跑（≤2�
   const latexmk = await compilePaper({
     engine: 'latexmk',
     entry: 'main.tex',
+    cwd: '/tmp/srw-test-paper',
     run: async () => {
       latexmkCalls += 1
       return { stdout: 'Latexmk: All targets () are up-to-date\nLaTeX Warning: Label(s) may have changed. Rerun to get cross-references right.', stderr: '' }
@@ -99,6 +101,7 @@ test('compile：非零退出（nonstopmode 日志）→ 结构化错误，fallba
   const outcome = await compilePaper({
     engine: 'pdflatex',
     entry: 'main.tex',
+    cwd: '/tmp/srw-test-paper',
     run: async () => {
       throw new Error(`exit code 1\n${failingLog}`)
     },

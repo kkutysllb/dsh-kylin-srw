@@ -51,6 +51,8 @@ export declare class LiteratureService {
     }>;
     /** 按 DOI 直取元数据（校验真伪）。 */
     resolveDoi(doi: string): Promise<LitCandidate>;
+    /** 取单条文献条目（writer refsAppend 生成 BibTeX 用）。 */
+    entry(project: string, key: string): Promise<LitEntry>;
     /** 取 PDF：pdfUrl→oaUrl 顺序尝试；落 `literature/pdf/<citekey>-<hash6>.pdf`；
      * 成功回填 entry.pdf。 */
     fetchPdf(project: string, key: string): Promise<{

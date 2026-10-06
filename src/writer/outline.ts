@@ -18,6 +18,8 @@ export interface OutlineSection {
   readonly intent: string
   readonly targetWords: number
   readonly status: OutlineStatus
+  /** 正文节文件（paper/ 内相对路径）——outline.save 按序分配，同名沿用。 */
+  readonly file?: string
 }
 
 export interface Outline {
@@ -71,6 +73,7 @@ export function parseOutline(raw: string): Outline {
       intent: typeof section['intent'] === 'string' ? section['intent'] : '',
       targetWords: typeof section['targetWords'] === 'number' ? section['targetWords'] : 400,
       status: section['status'] === 'confirmed' ? 'confirmed' as const : 'draft' as const,
+      ...(typeof section['file'] === 'string' && section['file'] !== '' ? { file: section['file'] } : {}),
     }
   })
   const outline: Outline = {

@@ -18,6 +18,8 @@ export declare function compilePaper(options: {
     /** 工作目录内入口（相对），如 main.tex。 */
     readonly entry: string;
     readonly run: RunPort;
+    /** 编译工作目录（paper/）。 */
+    readonly cwd: string;
     readonly maxReruns?: number;
 }): Promise<CompileOutcome>;
 /** 编译失败但非零退出信息不友好时（假引擎/超时），把 message 包成结构化错误

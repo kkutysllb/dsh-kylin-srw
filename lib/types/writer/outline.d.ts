@@ -13,6 +13,8 @@ export interface OutlineSection {
     readonly intent: string;
     readonly targetWords: number;
     readonly status: OutlineStatus;
+    /** 正文节文件（paper/ 内相对路径）——outline.save 按序分配，同名沿用。 */
+    readonly file?: string;
 }
 export interface Outline {
     readonly schemaVersion: 1;

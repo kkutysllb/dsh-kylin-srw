@@ -8,8 +8,9 @@ export type TeXEngine = 'tectonic' | 'latexmk' | 'xelatex' | 'pdflatex'
  * pdflatex 需自管重跑。 */
 export const ENGINE_ORDER: readonly TeXEngine[] = ['tectonic', 'latexmk', 'xelatex', 'pdflatex']
 
-/** 进程执行端口：`command args…`，非零退出码抛错；测试注入假 runner。 */
-export type RunPort = (command: string, args: readonly string[], options: { timeoutMs: number }) => Promise<{ stdout: string; stderr: string }>
+/** 进程执行端口：`command args…`（cwd 固定在 paper/），非零退出码抛错；
+ * 测试注入假 runner。 */
+export type RunPort = (command: string, args: readonly string[], options: { timeoutMs: number; cwd: string }) => Promise<{ stdout: string; stderr: string }>
 
 export interface EngineProbeResult {
   readonly engine: TeXEngine | undefined
@@ -21,7 +22,7 @@ export function probeEngines(run: RunPort, timeoutMs = 3000): Promise<EngineProb
     const probes: { engine: TeXEngine; available: boolean; version?: string }[] = []
     for (const engine of ENGINE_ORDER) {
       try {
-        const output = await run(engine, ['--version'], { timeoutMs })
+        const output = await run(engine, ['--version'], { timeoutMs, cwd: process.cwd() })
         const version = (output.stdout + output.stderr).split('\n')[0]?.trim() ?? ''
         probes.push({ engine, available: true, ...(version !== '' ? { version: version.slice(0, 120) } : {}) })
       } catch {

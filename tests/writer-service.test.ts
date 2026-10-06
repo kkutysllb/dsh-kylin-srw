@@ -1,0 +1,189 @@
+/** WriterService 全链（0206 Task 5.2–5.8 集成面）：假引擎注入——骨架 →
+ * 大纲（G1 门拒正文）→ 确认 → section.write → 编译成功留快照 → 改坏再
+ * 编译失败（错误带行）→ 回滚恢复。真引擎不在单测范围（本机四缺）。 */
+
+import assert from 'node:assert/strict'
+import { test } from 'node:test'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { resolve as pathResolve } from 'node:path'
+import { WriterService, type VenueInstance } from '../src/writer/service.ts'
+import type { RunPort } from '../src/writer/engine.ts'
+import { ServiceError } from '../src/service.ts'
+
+function fakeFs() {
+  return {
+    resolve: (rel: string, opts?: { cwd?: string }) => ({ key: pathResolve(opts?.cwd ?? process.cwd(), rel) }),
+    contains: (parent: { key: string }, child: { key: string }) => {
+      const p = pathResolve(parent.key)
+      const c = pathResolve(child.key)
+      return c === p || c.startsWith(`${p}/`)
+    },
+  }
+}
+
+/** 假 tectonic：产出固定 PDF；任一 .tex（main + sections/）含 \brokenmacro
+ * 时按真实 nonstopmode 日志形态失败（错误消息被 79 列折行——顺带验证解析链）。 */
+function fakeEngine(): RunPort {
+  return async (command, args, options) => {
+    if (command !== 'tectonic') throw new Error(`spawn ${command} ENOENT`)
+    const { readdir } = await import('node:fs/promises')
+    const texFiles: string[] = []
+    const main = await readFile(join(options.cwd, 'main.tex'), 'utf8').catch(() => '')
+    texFiles.push(main)
+    for (const name of await readdir(join(options.cwd, 'sections')).catch(() => [])) {
+      if (name.endsWith('.tex')) texFiles.push(await readFile(join(options.cwd, 'sections', name), 'utf8'))
+    }
+    const all = texFiles.join('\n')
+    // 行号按所在文件算（真实引擎语义）
+    let brokenLine = 0
+    for (const text of texFiles) {
+      const index = text.split('\n').findIndex(line => line.includes('\\brokenmacro'))
+      if (index >= 0) {
+        brokenLine = index + 1
+        break
+      }
+    }
+    if (brokenLine > 0) {
+      // 79 列折行形态：解释行被引擎折成 79 列 + 余行（refold 应回接）
+      const explain = 'the argument x was used somewhere in the document body and it is undef'.padEnd(79, 'i')
+      const long = `! Undefined control sequence.\n${explain}\n ned indeed\nl.${brokenLine} \\brokenmacro`
+      throw new Error(`exit 1\n${long}`)
+    }
+    await mkdir(join(options.cwd, 'build'), { recursive: true })
+    await writeFile(join(options.cwd, 'build', 'main.pdf'), Buffer.from('%PDF-1.4 fake output'))
+    await writeFile(join(options.cwd, 'build', 'main.log'), 'Output written on main.pdf (6 pages, 12345 bytes).')
+    return { stdout: 'Compiling main.tex → build/main.pdf', stderr: '' }
+  }
+}
+
+async function makeService(): Promise<{ service: WriterService; root: string }> {
+  const root = await mkdtemp(join(tmpdir(), 'srw-writer-'))
+  const service = new WriterService({
+    fs: fakeFs(),
+    rootDir: () => root,
+    run: fakeEngine(),
+  })
+  await mkdir(join(root, 'demo', '.srw'), { recursive: true })
+  return { service, root }
+}
+
+test('writer 全链：venue 应用 → 骨架 → 大纲 G1 → 确认 → 节写入 → 编译快照 → 失败定位 → 回滚', async () => {
+  const { service, root } = await makeService()
+  try {
+    // 骨架前置：未应用刊物拒绝
+    await assert.rejects(
+      () => service.scaffold('demo', { title: 'T' }),
+      (error: unknown) => error instanceof ServiceError && error.code === 'INVALID',
+    )
+    const instance = await service.venueApply('demo', 'ieee-journal', 'D1')
+    assert.equal(instance.tier, 'D1')
+
+    const plan = await service.scaffold('demo', { title: 'Attention Revisited' })
+    assert.ok(plan.written.includes('main.tex'))
+    assert.ok(plan.written.includes('refs.bib'))
+    // 已有 main.tex 拒绝重生成
+    await assert.rejects(
+      () => service.scaffold('demo', { title: 'Again' }),
+      (error: unknown) => error instanceof ServiceError && error.code === 'INVALID',
+    )
+
+    // 大纲：骨架落了草稿；G1 门拒正文
+    const draft = await service.outlineGet('demo')
+    assert.equal(draft?.status, 'draft')
+    await assert.rejects(
+      () => service.sectionWrite('demo', 's1', '\\section{X}'),
+      (error: unknown) => error instanceof ServiceError && error.code === 'GATE',
+    )
+
+    // agent 起草新大纲（draft→save→confirm）
+    const saved = await service.outlineSave('demo', [
+      { title: 'Introduction', intent: '问题与贡献', targetWords: 500 },
+      { title: 'Method', intent: '方法框架', targetWords: 900 },
+    ])
+    assert.equal(saved.status, 'draft')
+    assert.equal(saved.revision, 0)
+    assert.ok(saved.sections.every(section => section.file !== undefined))
+    // 同名节沿用旧文件
+    assert.equal(saved.sections[0]?.file, 'sections/01-introduction.tex')
+
+    const confirmed = await service.outlineConfirm('demo')
+    assert.equal(confirmed.status, 'confirmed')
+    assert.equal(confirmed.revision, 1)
+
+    // 节写入：坏节先写一个 \brokenmacro → 编译失败定位行号
+    const badTex = '\\section{Introduction}\nWe use \\brokenmacro here.\n'
+    await service.sectionWrite('demo', 's1', badTex)
+    const failed = await service.compile('demo')
+    assert.equal(failed.ok, false)
+    assert.equal(failed.parsed.errors.length, 1)
+    assert.equal(failed.parsed.errors[0]?.line, 2, '折行回接后行号指向 brokenmacro 行')
+    assert.equal(failed.snapshot, undefined, '编译失败不留快照')
+
+    // 修复 → 编译成功 → 快照 + PDF
+    await service.sectionWrite('demo', 's1', '\\section{Introduction}\nAll good now.\n')
+    const okRun = await service.compile('demo')
+    assert.equal(okRun.ok, true)
+    assert.equal(okRun.pdfWritten, true)
+    assert.ok(okRun.snapshot !== undefined)
+
+    // 改坏现场 → 回滚 → 内容复原
+    await service.sectionWrite('demo', 's1', '\\section{Wrecked}\n')
+    await service.snapshotRestore('demo', okRun.snapshot!.id)
+    assert.equal(await readFile(join(root, 'demo', 'paper', 'sections', '01-introduction.tex'), 'utf8'), '\\section{Introduction}\nAll good now.\n')
+
+    const state = await service.state('demo')
+    assert.equal(state.venue?.venueId, 'ieee-journal')
+    assert.equal(state.outline?.status, 'confirmed')
+    assert.equal(state.engine.engine, 'tectonic')
+    assert.equal(state.files.buildPdf, true)
+    assert.ok(state.snapshots.length >= 1)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('writer：无引擎 → ENGINE_MISSING（引导安装，不是崩）；outline.prompt 分档', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'srw-writer-'))
+  try {
+    const service = new WriterService({
+      fs: fakeFs(),
+      rootDir: () => root,
+      run: async () => {
+        throw new Error('spawn ENOENT')
+      },
+    })
+    await service.venueApply('demo', 'ieee-journal')
+    await service.scaffold('demo', { title: 'T' })
+    await assert.rejects(
+      () => service.compile('demo'),
+      (error: unknown) => error instanceof ServiceError && error.code === 'ENGINE_MISSING',
+    )
+    const { prompt, tier } = await service.outlinePromptFor('demo')
+    assert.equal(tier, 'D3')
+    assert.ok(prompt.includes('D3'))
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('writer：合规检查从盘上事实计算（sections/figures/tables/refs/pages）', async () => {
+  const { service, root } = await makeService()
+  try {
+    await service.venueApply('demo', 'ieee-journal', 'D1')
+    await service.scaffold('demo', { title: 'T' })
+    await service.outlineConfirm('demo')
+    // 骨架空节：0 图 0 表 0 引用 → 合规必然不过（但 unverified 全 warn）
+    const result = await service.compliance('demo')
+    assert.equal((result.venue as VenueInstance).venueId, 'ieee-journal')
+    assert.ok(result.checks.length >= 5)
+    assert.ok(result.checks.every(check => check.level === 'warn'), '未核定刊物全 warn')
+    const refs = result.checks.find(check => check.id === 'references')
+    assert.equal(refs?.actual, '0 条')
+    assert.ok(result.checks.some(check => check.id.startsWith('section.')))
+    void root
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})

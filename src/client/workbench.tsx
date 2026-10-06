@@ -73,6 +73,45 @@ interface WatchSubLite {
   readonly lastResult?: { readonly at: string; readonly kind: string; readonly fresh?: number; readonly error?: string }
 }
 
+interface VenueLite {
+  readonly id: string
+  readonly name: string
+  readonly lang: string
+  readonly depthTier: string
+  readonly confidence: string
+}
+
+interface PaperStateLite {
+  readonly project: string
+  readonly venue?: { readonly venueId: string; readonly tier: string }
+  readonly outline?: { readonly status: string; readonly revision: number; readonly sections: number }
+  readonly engine: { readonly engine?: string; readonly probes: readonly { readonly engine: string; readonly available: boolean }[] }
+  readonly files: { readonly mainTex: boolean; readonly refsBib: boolean; readonly sections: readonly string[]; readonly buildPdf: boolean }
+  readonly snapshots: readonly { readonly id: string; readonly createdAt: string; readonly files: number }[]
+}
+
+interface TeXErrorLite {
+  readonly file?: string
+  readonly line?: number
+  readonly code: string
+  readonly message: string
+}
+
+interface CiteAuditLite {
+  readonly missing: readonly string[]
+  readonly unused: readonly string[]
+  readonly nociteAll: boolean
+}
+
+interface ComplianceLite {
+  readonly id: string
+  readonly level: string
+  readonly pass: boolean | undefined
+  readonly actual: string
+  readonly expected: string
+  readonly where: string
+}
+
 interface ReadingStatusLite {
   readonly paperKey: string
   readonly extracted: boolean
@@ -159,6 +198,15 @@ export function WorkbenchView({ ctx }: { readonly ctx: ClientContext }): React.R
   const [watchQuery, setWatchQuery] = useState('')
   const [watchEvery, setWatchEvery] = useState(86_400)
   const [watchBusy, setWatchBusy] = useState(false)
+  const [paperState, setPaperState] = useState<PaperStateLite | null>(null)
+  const [venueRows, setVenueRows] = useState<readonly VenueLite[]>([])
+  const [paperTitle, setPaperTitle] = useState('')
+  const [paperTier, setPaperTier] = useState<'D1' | 'D2' | 'D3'>('D2')
+  const [paperBusy, setPaperBusy] = useState(false)
+  const [paperNotice, setPaperNotice] = useState<string | null>(null)
+  const [compileErrors, setCompileErrors] = useState<readonly TeXErrorLite[]>([])
+  const [citeAudit, setCiteAudit] = useState<CiteAuditLite | null>(null)
+  const [complianceRows, setComplianceRows] = useState<readonly ComplianceLite[]>([])
   const [watchNotice, setWatchNotice] = useState<string | null>(null)
   const [confirmingWatchId, setConfirmingWatchId] = useState<string | null>(null)
   const [readingSelKey, setReadingSelKey] = useState('')
@@ -708,11 +756,162 @@ export function WorkbenchView({ ctx }: { readonly ctx: ClientContext }): React.R
     }
   }
 
+
+  /* ── 论文线（M5）：刊物/骨架/大纲 G1/编译/审计/快照。大纲与正文内容由
+   * 会话里的 Agent 起草（引擎车道，srw_paper 工具）；面板只做状态与门。 */
+  const loadPaper = useCallback(async (project: string): Promise<void> => {
+    try {
+      const value = await rpc<PaperStateLite>(ctx, 'paper.state', { project })
+      if (alive.current) setPaperState(value)
+    } catch {
+      if (alive.current) setPaperState(null)
+    }
+  }, [ctx])
+
+  const loadVenues = useCallback(async (): Promise<void> => {
+    try {
+      const value = await rpc<{ venues: readonly VenueLite[] }>(ctx, 'venue.list', {})
+      if (alive.current) setVenueRows(value.venues)
+    } catch { /* 注册表只读，失败静默 */ }
+  }, [ctx])
+
+  useEffect(() => {
+    const project = overview?.activeProject
+    if (project === undefined || project === '') {
+      setPaperState(null)
+      return
+    }
+    void loadPaper(project)
+  }, [overview?.activeProject, loadPaper])
+
+  const paperAction = async (action: 'venue' | 'scaffold' | 'confirm' | 'compile' | 'audit' | 'compliance', extra: Record<string, unknown> = {}): Promise<void> => {
+    const project = overview?.activeProject ?? ''
+    if (project === '') { setPaperNotice('先打开项目'); return }
+    setPaperBusy(true)
+    try {
+      if (action === 'venue') {
+        const venueId = String(extra['venueId'] ?? '')
+        await rpc(ctx, 'venue.apply', { project, venueId, tier: paperTier })
+        setPaperNotice(`已应用刊物 ${venueId}（${paperTier}）——下一步生成骨架`)
+      } else if (action === 'scaffold') {
+        const title = paperTitle.trim()
+        if (title === '') { setPaperNotice('先填论文标题'); return }
+        const plan = await rpc<{ written: readonly string[] }>(ctx, 'paper.scaffold', { project, title })
+        setPaperNotice(`骨架已生成（${plan.written.length} 个文件）——去会话里让 Agent 起草大纲`)
+      } else if (action === 'confirm') {
+        const outline = await rpc<{ revision: number }>(ctx, 'paper.outline.confirm', { project })
+        setPaperNotice(`大纲已确认（G1 通过，revision ${outline.revision}）——Agent 可逐节起草正文`)
+      } else if (action === 'compile') {
+        const outcome = await rpc<{ ok: boolean; engine: string; errors: readonly TeXErrorLite[]; pdfWritten: boolean }>(ctx, 'paper.compile', { project })
+        setCompileErrors(outcome.errors)
+        setPaperNotice(outcome.ok
+          ? `编译成功（${outcome.engine}${outcome.pdfWritten ? '，PDF 已产出' : ''}）——已自动留快照`
+          : `编译失败（${outcome.errors.length} 个错误）——点击错误查看 file:line 定位`)
+      } else if (action === 'audit') {
+        const audit = await rpc<CiteAuditLite>(ctx, 'paper.citeAudit', { project })
+        setCiteAudit(audit)
+        setPaperNotice(`引用审计：缺 ${audit.missing.length} 条 / 未引用 ${audit.unused.length} 条${audit.nociteAll ? '（含 \\nocite{*}）' : ''}`)
+      } else {
+        const result = await rpc<{ checks: readonly ComplianceLite[] }>(ctx, 'paper.compliance', { project })
+        setComplianceRows(result.checks)
+        const failed = result.checks.filter(check => check.pass === false).length
+        setPaperNotice(failed === 0 ? '合规检查：无不过项' : `合规检查：${failed} 项不过（未核定刊物仅建议）`)
+      }
+      await loadPaper(project)
+    } catch (cause) {
+      setPaperNotice(`操作失败：${String(cause)}`)
+    } finally {
+      if (alive.current) setPaperBusy(false)
+    }
+  }
+
+  const refsAppend = async (): Promise<void> => {
+    const project = overview?.activeProject ?? ''
+    const missing = citeAudit?.missing ?? []
+    if (project === '' || missing.length === 0) return
+    setPaperBusy(true)
+    try {
+      const result = await rpc<{ added: readonly string[]; skippedExisting: readonly string[]; missing: readonly string[] }>(
+        ctx, 'paper.refsAppend', { project, keys: missing },
+      )
+      setCiteAudit(await rpc<CiteAuditLite>(ctx, 'paper.citeAudit', { project }))
+      setPaperNotice(`已追加 ${result.added.length} 条 BibTeX${result.missing.length > 0 ? `；库中找不到 ${result.missing.length} 条（先在文献卡入库）` : ''}`)
+    } catch (cause) {
+      setPaperNotice(`追加失败：${String(cause)}`)
+    } finally {
+      if (alive.current) setPaperBusy(false)
+    }
+  }
+
+  const outlineViaAgent = async (): Promise<void> => {
+    const project = overview?.activeProject ?? ''
+    if (project === '') { setPaperNotice('先打开项目'); return }
+    setPaperBusy(true)
+    try {
+      const draftPrompt = [
+        `请为项目 ${project} 起草论文大纲，全部用 srw_paper 工具完成：`,
+        `1) action=venue.list 与 action=state 看当前刊物与档位；`,
+        `2) action=outline.prompt 拿分档提示词；`,
+        `3) 按提示词拟大纲（每节 title/intent/targetWords），action=outline.save 提交；`,
+        `4) 把大纲逐节展示给用户并请求确认——用户同意前不要调 outline.confirm。`,
+      ].join('\n')
+      const outcome = await sendToCurrentAgent(draftPrompt)
+      if (!alive.current) return
+      setPaperNotice(outcome === 'sent'
+        ? '已发起：大纲由当前会话的 Agent 起草（已切到会话页）——确认后回面板过 G1 门'
+        : '提示词已复制到剪贴板——到会话输入框粘贴回车即发起')
+    } finally {
+      if (alive.current) setPaperBusy(false)
+    }
+  }
+
+  const sectionViaAgent = async (): Promise<void> => {
+    const project = overview?.activeProject ?? ''
+    if (project === '') { setPaperNotice('先打开项目'); return }
+    setPaperBusy(true)
+    try {
+      const draftPrompt = [
+        `请为项目 ${project} 逐节起草论文正文，全部用 srw_paper 工具完成：`,
+        `1) action=outline.get 看已确认大纲（未确认则先停下请用户确认）；`,
+        `2) 逐节起草：按节的 intent 与 targetWords 写完整 LaTeX（数字/引用必须来自`,
+        `文献库真实条目，\cite key 用库内 key），action=section.write 写入（sectionId 用大纲节 id）；`,
+        `3) 每节完成向用户报进度；全部写完 action=compile 编译并汇报错误定位。`,
+      ].join('\n')
+      const outcome = await sendToCurrentAgent(draftPrompt)
+      if (!alive.current) return
+      setPaperNotice(outcome === 'sent'
+        ? '已发起：正文由当前会话的 Agent 逐节起草（已切到会话页）'
+        : '提示词已复制到剪贴板——到会话输入框粘贴回车即发起')
+    } finally {
+      if (alive.current) setPaperBusy(false)
+    }
+  }
+
+  const snapshotRestore = async (id: string): Promise<void> => {
+    const project = overview?.activeProject ?? ''
+    if (project === '') return
+    setPaperBusy(true)
+    try {
+      const result = await rpc<{ restored: readonly string[] }>(ctx, 'paper.snapshot.restore', { project, id })
+      setPaperNotice(`已恢复快照 ${id}（${result.restored.length} 个文件）——建议重新编译核对`)
+      await loadPaper(project)
+    } catch (cause) {
+      setPaperNotice(`回滚失败：${String(cause)}`)
+    } finally {
+      if (alive.current) setPaperBusy(false)
+    }
+  }
+
   /* 活动项目变化 → 刷新文献库列表 */
   useEffect(() => {
     const slug = overview?.activeProject
     if (slug !== undefined && slug !== '') void refreshLib(slug)
   }, [overview?.activeProject, refreshLib])
+
+  /* 刊物注册表（静态）——挂载即取一次 */
+  useEffect(() => {
+    void loadVenues()
+  }, [loadVenues])
 
   const activeStage = overview?.activeStage
   const rootDir = overview?.rootDir ?? ''
@@ -1081,6 +1280,115 @@ export function WorkbenchView({ ctx }: { readonly ctx: ClientContext }): React.R
         ) : (
           <p className='srw-detail'>暂无订阅。检索词写法与「文献」卡一致（ti:/abs:/au: 前缀可选）；到点自动抓取进当前项目库。</p>
         )}
+      </div>
+
+      <div className='srw-card'>
+        <h2>论文{paperState?.venue !== undefined ? `：${paperState.venue.venueId}（${paperState.venue.tier}）` : ''}</h2>
+        <p className='srw-detail'>论文线：选刊 → 骨架 → 大纲（Agent 起草，**你确认过 G1 门**）→ 正文（Agent 逐节）→ 编译（错误带 file:line）→ 快照回滚。大纲/正文生成走会话 Agent（srw_paper 工具），面板不做后台代笔。</p>
+        {paperNotice !== null ? <p className='srw-detail'>{paperNotice}</p> : null}
+        {paperState !== null && paperState.engine.engine === undefined ? (
+          <p className='srw-detail'>⚠ 本机没有 TeX 引擎（tectonic/latexmk/xelatex/pdflatex 全缺）——编译不可用。<code>brew install tectonic</code> 后重试。</p>
+        ) : null}
+        <div className='srw-actions'>
+          <select
+            className='srw-input'
+            value={paperState?.venue?.venueId ?? ''}
+            onChange={event => { const venueId = event.target.value; if (venueId !== '') void paperAction('venue', { venueId }) }}
+          >
+            <option value=''>{paperState?.venue !== undefined ? paperState.venue.venueId : '选择刊物…'}</option>
+            {venueRows.filter(venue => venue.id !== paperState?.venue?.venueId).map(venue => (
+              <option key={venue.id} value={venue.id}>{venue.name}（{venue.confidence === 'verified' ? '已核定' : '未核定·仅建议'}）</option>
+            ))}
+          </select>
+          <select className='srw-input' value={paperTier} onChange={event => { setPaperTier(event.target.value as typeof paperTier) }}>
+            <option value='D1'>D1 快报/Workshop</option>
+            <option value='D2'>D2 会议全文</option>
+            <option value='D3'>D3 期刊长文</option>
+          </select>
+          <input
+            className='srw-input'
+            placeholder='论文标题（骨架用）'
+            value={paperTitle}
+            onChange={event => { setPaperTitle(event.target.value) }}
+          />
+          <button className='srw-btn' disabled={paperBusy || paperState?.venue === undefined || paperState?.files.mainTex === true} onClick={() => { void paperAction('scaffold') }}>生成骨架</button>
+          <button className='srw-btn' disabled={paperBusy} onClick={() => { void outlineViaAgent() }}>大纲（Agent）</button>
+          <button className='srw-btn primary' disabled={paperBusy || paperState?.outline?.status !== 'draft'} title='G1 确认门：确认后 Agent 才能写正文' onClick={() => { void paperAction('confirm') }}>确认大纲</button>
+          <button className='srw-btn' disabled={paperBusy || paperState?.outline?.status !== 'confirmed'} onClick={() => { void sectionViaAgent() }}>正文（Agent）</button>
+          <button className='srw-btn' disabled={paperBusy || paperState?.files.mainTex !== true} onClick={() => { void paperAction('compile') }}>编译</button>
+          <button className='srw-btn' disabled={paperBusy || paperState?.files.mainTex !== true} onClick={() => { void paperAction('audit') }}>引用审计</button>
+          <button className='srw-btn' disabled={paperBusy || paperState?.files.mainTex !== true} onClick={() => { void paperAction('compliance') }}>合规检查</button>
+        </div>
+        {paperState !== null ? (
+          <p className='srw-project-meta'>
+            {paperState.outline !== undefined ? (
+              <><span>大纲 {paperState.outline.status === 'confirmed' ? `已确认（r${paperState.outline.revision}）` : '草稿（未过 G1）'}</span><span>·</span><span>{paperState.outline.sections} 节</span><span>·</span></>
+            ) : null}
+            <span>{paperState.files.mainTex ? 'main.tex ✓' : '无骨架'}</span>
+            <span>·</span>
+            <span>{paperState.files.sections.length} 个节文件</span>
+            <span>·</span>
+            <span>{paperState.files.buildPdf ? 'build/main.pdf ✓' : '无产物'}</span>
+            <span>·</span>
+            <span>快照 {paperState.snapshots.length}</span>
+          </p>
+        ) : null}
+        {compileErrors.length > 0 ? (
+          <ul className='srw-list'>
+            {compileErrors.map((error, index) => (
+              <li key={`${error.file ?? ''}:${error.line ?? index}`} className='srw-item' title={error.message}>
+                <div className='srw-project-main'>
+                  <code>{error.file ?? '(位置未知)'}{error.line !== undefined ? `:${error.line}` : ''}</code>
+                  <span className='srw-badge bad'>{error.code}</span>
+                </div>
+                <p className='srw-detail' style={{ whiteSpace: 'pre-wrap' }}>{error.message}</p>
+              </li>
+            ))}
+          </ul>
+        ) : null}
+        {citeAudit !== null ? (
+          <div>
+            <p className='srw-detail'>
+              缺失 {citeAudit.missing.length} 条
+              {citeAudit.missing.length > 0 ? (
+                <>：<code>{citeAudit.missing.join(', ')}</code>{' '}
+                <button className='srw-btn' disabled={paperBusy} onClick={() => { void refsAppend() }}>从文献库一键补 BibTeX</button></>
+              ) : null}
+              {citeAudit.unused.length > 0 ? `；未引用 ${citeAudit.unused.length} 条（${citeAudit.unused.slice(0, 5).join(', ')}${citeAudit.unused.length > 5 ? '…' : ''}）` : ''}
+            </p>
+          </div>
+        ) : null}
+        {complianceRows.length > 0 ? (
+          <ul className='srw-list'>
+            {complianceRows.map(check => (
+              <li key={check.id} className='srw-item'>
+                <div className='srw-project-main'>
+                  <code>{check.id}</code>
+                  <span className={`srw-badge ${check.pass === false ? 'bad' : check.pass === undefined ? '' : ''}`}>
+                    {check.pass === false ? (check.level === 'error' ? '不过（阻断）' : '不过（建议）') : check.pass === undefined ? '事实缺失' : '通过'}
+                  </span>
+                </div>
+                <p className='srw-detail'>{check.actual} / 期望 {check.expected} → {check.where}</p>
+              </li>
+            ))}
+          </ul>
+        ) : null}
+        {paperState !== null && paperState.snapshots.length > 0 ? (
+          <div>
+            <p className='srw-detail'>快照（编译成功自动留档，可回滚）：</p>
+            <ul className='srw-list'>
+              {paperState.snapshots.slice(0, 5).map(snapshot => (
+                <li key={snapshot.id} className='srw-item'>
+                  <div className='srw-project-main'>
+                    <code>{snapshot.id}</code>
+                    <span className='srw-detail'>{snapshot.files} 个文件 · {snapshot.createdAt.slice(0, 19).replace('T', ' ')}</span>
+                    <button className='srw-btn' disabled={paperBusy} onClick={() => { void snapshotRestore(snapshot.id) }}>回滚</button>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
       </div>
 
       {activeStage !== undefined ? (

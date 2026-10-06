@@ -451,6 +451,156 @@ export function srwLiteratureToolDef(service: SrwService): SrwToolDef {
   }
 }
 
+/** `srw_paper` 工具：论文线执行面（M5）。全部动作豁免审批——写的是项目域内
+ * paper/ 与 .srw/{venue,outline}.json；大纲/正文内容由会话里的 Agent 自己
+ * 起草（agent 车道：工具只做 IO + 门），G1 确认门在服务层硬编码——未确认
+ * 的大纲 section.write 直接拒绝。编译是本机进程（TeX 引擎全缺时报
+ * ENGINE_MISSING + 安装引导，不算工具失败）。 */
+export const SRW_PAPER_TOOL_NAME = 'srw_paper'
+
+export function srwPaperToolDef(service: SrwService): SrwToolDef {
+  const writer = (): SrwService['writer'] => service.writer
+  const run = async (args: unknown): Promise<Record<string, unknown>> => {
+    const record = typeof args === 'object' && args !== null ? args as Record<string, unknown> : {}
+    const project = typeof record['project'] === 'string' ? record['project'] : ''
+    switch (record['action']) {
+      case 'state':
+        return { ...(await writer().state(project)) }
+      case 'venue.list':
+        return { venues: writer().venueList() }
+      case 'venue.apply': {
+        const venueId = typeof record['venueId'] === 'string' ? record['venueId'] : ''
+        const tier = record['tier'] === 'D1' || record['tier'] === 'D2' || record['tier'] === 'D3' ? record['tier'] : undefined
+        const instance = await writer().venueApply(project, venueId, tier)
+        return { ...instance, hint: `已应用 ${venueId}（档位 ${instance.tier}）——action=scaffold 生成骨架` }
+      }
+      case 'scaffold': {
+        const title = typeof record['title'] === 'string' && record['title'].trim() !== '' ? record['title'].trim() : ''
+        if (title === '') throw new ServiceError('INVALID', 'scaffold 需要 title（论文标题）')
+        const authors = typeof record['authors'] === 'string' ? record['authors'] : undefined
+        const plan = await writer().scaffold(project, { title, ...(authors !== undefined ? { authors } : {}) })
+        return { written: plan.written, sections: plan.sections, hint: '骨架已生成（大纲草稿同步落盘）——action=outline.prompt 拿提示词起草大纲' }
+      }
+      case 'outline.get':
+        return { ...(await writer().outlineGet(project) ?? { status: 'none', revision: 0, sections: [] }) }
+      case 'outline.prompt': {
+        const result = await writer().outlinePromptFor(project)
+        return { ...result, hint: '按提示词拟好大纲 JSON，然后 action=outline.save 提交（sections 数组）' }
+      }
+      case 'outline.save': {
+        const raw = record['sections']
+        const sections = Array.isArray(raw)
+          ? raw.map((item: unknown) => {
+              const section = typeof item === 'object' && item !== null ? item as Record<string, unknown> : {}
+              return {
+                title: typeof section['title'] === 'string' ? section['title'] : '',
+                intent: typeof section['intent'] === 'string' ? section['intent'] : '',
+                ...(typeof section['targetWords'] === 'number' ? { targetWords: section['targetWords'] } : {}),
+              }
+            }).filter(section => section.title !== '')
+          : []
+        const outline = await writer().outlineSave(project, sections)
+        return { ...outline, hint: '大纲已保存（draft）——向用户逐节展示并请确认，用户同意后 action=outline.confirm（G1 门）' }
+      }
+      case 'outline.confirm': {
+        const outline = await writer().outlineConfirm(project)
+        return { ...outline, hint: `大纲已确认（revision ${outline.revision}，G1 通过）——可 action=section.write 逐节起草正文` }
+      }
+      case 'section.write': {
+        const sectionId = typeof record['sectionId'] === 'string' ? record['sectionId'] : ''
+        const tex = typeof record['tex'] === 'string' ? record['tex'] : ''
+        if (tex.trim() === '') throw new ServiceError('INVALID', 'section.write 需要 tex（完整节 LaTeX）')
+        const result = await writer().sectionWrite(project, sectionId, tex)
+        return { ...result, hint: '节已写入——全部节写完后 action=compile 编译' }
+      }
+      case 'compile': {
+        const outcome = await writer().compile(project)
+        return {
+          ok: outcome.ok,
+          engine: outcome.engine,
+          reran: outcome.reran,
+          pdfWritten: outcome.pdfWritten,
+          errors: outcome.parsed.errors,
+          warnings: outcome.parsed.warnings.slice(0, 20),
+          ...(outcome.snapshot !== undefined ? { snapshot: outcome.snapshot } : {}),
+          hint: outcome.ok
+            ? `编译成功（${outcome.engine}${outcome.snapshot !== undefined ? `，快照 ${outcome.snapshot.id}` : ''}）`
+            : `编译失败——按 errors[].file/line 定位修改后重新编译（错误行可点）`,
+        }
+      }
+      case 'cite.audit':
+        return { ...(await writer().citeAudit(project)) }
+      case 'refs.append': {
+        const raw = record['keys']
+        const keys = Array.isArray(raw) ? raw.filter((item): item is string => typeof item === 'string') : []
+        if (keys.length === 0) throw new ServiceError('INVALID', 'refs.append 需要 keys（文献库条目 key）')
+        return { ...(await writer().refsAppend(project, keys)) }
+      }
+      case 'snapshot.list':
+        return { snapshots: await writer().snapshotList(project) }
+      case 'snapshot.restore': {
+        const id = typeof record['id'] === 'string' ? record['id'] : ''
+        const restored = await writer().snapshotRestore(project, id)
+        return { restored, hint: `已恢复 ${restored.length} 个文件——重新 compile 验证产物一致` }
+      }
+      case 'compliance': {
+        const result = await writer().compliance(project)
+        const failed = result.checks.filter(check => check.pass === false)
+        return {
+          ...result,
+          failedCount: failed.length,
+          hint: failed.length === 0 ? '全部合规检查通过（或事实缺失未判）' : `${failed.length} 项不过——按 where 字段跳转整改`,
+        }
+      }
+      default:
+        throw new ServiceError('INVALID', `未知 action：${JSON.stringify(record['action'])}`)
+    }
+  }
+  return {
+    name: SRW_PAPER_TOOL_NAME,
+    description: [
+      '论文线执行面（科研工作台）：骨架生成（scaffold，按刊物模板）、大纲工作流',
+      '（outline.prompt 拿分档提示词 → 自己拟大纲 → outline.save → 向用户确认 →',
+      'outline.confirm 过 G1 门）、逐节起草正文（section.write，G1 未过会拒绝）、',
+      '编译（compile，本机 TeX 引擎；错误带 file/line 可定位）、引用审计与一键补',
+      'BibTeX（cite.audit / refs.append）、快照回滚（snapshot.list / snapshot.restore）、',
+      '合规检查（compliance，D1-D3 档位阈值 + 刊物要求，机读 checks）。',
+      '纪律：正文内容必须由你自己起草（档位决定篇幅与完备度），工具只落盘；',
+      '大纲未经用户确认不要调 outline.confirm。',
+    ].join(''),
+    parameters: {
+      type: 'object',
+      properties: {
+        action: {
+          type: 'string',
+          enum: ['state', 'venue.list', 'venue.apply', 'scaffold', 'outline.get', 'outline.prompt', 'outline.save', 'outline.confirm', 'section.write', 'compile', 'cite.audit', 'refs.append', 'snapshot.list', 'snapshot.restore', 'compliance'],
+          description: '要执行的动作',
+        },
+        project: { type: 'string', description: '项目 slug' },
+        venueId: { type: 'string', description: 'venue.apply 必填：刊物 id（venue.list 查询，如 ieee-journal）' },
+        tier: { type: 'string', enum: ['D1', 'D2', 'D3'], description: 'venue.apply 可选：深度档位（默认取刊物默认）' },
+        title: { type: 'string', description: 'scaffold 必填：论文标题' },
+        authors: { type: 'string', description: 'scaffold 可选：作者行' },
+        sections: { type: 'array', description: 'outline.save 必填：[{title, intent, targetWords}]', items: { type: 'object' } },
+        sectionId: { type: 'string', description: 'section.write 必填：大纲节 id（如 s1）' },
+        tex: { type: 'string', description: 'section.write 必填：该节完整 LaTeX 正文' },
+        keys: { type: 'array', items: { type: 'string' }, description: 'refs.append 必填：文献库条目 key' },
+        id: { type: 'string', description: 'snapshot.restore 必填：快照 id' },
+      },
+      required: ['action'],
+    },
+    output: { schema: { type: 'object' }, render: jsonRender },
+    timeoutMs: 600_000,
+    execute: async (args) => {
+      try {
+        return { ok: true, value: await run(args) }
+      } catch (error: unknown) {
+        return toolEnvelope(error)
+      }
+    },
+  }
+}
+
 /** `srw_read` 工具：精读执行面（0205 附记 / 引擎车道）。全部动作豁免——
  * 写的是项目域内派生产物（reading/ 与 readings/），授权来自会话里的显式
  * 意图（面板「翻译」按钮的提示词或用户直接指令）；翻译烧宿主默认模型

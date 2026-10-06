@@ -26,6 +26,8 @@ export async function compilePaper(options: {
   /** 工作目录内入口（相对），如 main.tex。 */
   readonly entry: string
   readonly run: RunPort
+  /** 编译工作目录（paper/）。 */
+  readonly cwd: string
   readonly maxReruns?: number
 }): Promise<CompileOutcome> {
   const maxReruns = options.maxReruns ?? 2
@@ -37,7 +39,7 @@ export async function compilePaper(options: {
   for (let attempt = 0; attempt <= maxReruns; attempt += 1) {
     const { command, args } = compileCommand(options.engine, options.entry)
     try {
-      const output = await options.run(command, args, { timeoutMs: 300_000 })
+      const output = await options.run(command, args, { timeoutMs: 300_000, cwd: options.cwd })
       log = output.stdout + output.stderr
       ok = true
     } catch (error: unknown) {

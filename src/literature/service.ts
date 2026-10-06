@@ -306,6 +306,14 @@ export class LiteratureService {
     return await resolveDoi({ gate: this.gate, ...(mailto === undefined ? {} : { mailto }) }, doi)
   }
 
+  /** 取单条文献条目（writer refsAppend 生成 BibTeX 用）。 */
+  async entry(project: string, key: string): Promise<LitEntry> {
+    const slug = assertProject(project)
+    const store = this.store(slug)
+    const doc = await store.load(slug)
+    return entryOrThrow(doc.entries, key)
+  }
+
   /** 取 PDF：pdfUrl→oaUrl 顺序尝试；落 `literature/pdf/<citekey>-<hash6>.pdf`；
    * 成功回填 entry.pdf。 */
   async fetchPdf(project: string, key: string): Promise<{ path: string; sha256: string; bytes: number }> {

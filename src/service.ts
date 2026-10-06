@@ -14,6 +14,7 @@ import { openSrwIndex, type SrwIndexDomain, type SrwIndexGlobal } from './store.
 import { attachLiterature, type LiteratureService } from './literature/service.ts'
 import { attachWatch, type WatchManager } from './watch/binding.ts'
 import { type LlmPort, ReadingService } from './reading/service.ts'
+import { WriterService } from './writer/service.ts'
 /** 与 package.json 同步维护；diag.caps 的 info.version 数据源。 */
 export const SRW_VERSION = '0.0.1'
 
@@ -107,6 +108,20 @@ export class SrwService {
       })
     }
     return this.readingRef
+  }
+
+  private writerRef: WriterService | undefined
+  /** 论文线（M5：骨架/大纲 G1/编译/快照/审计/合规）。进程执行用真实
+   * runner；文献库条目读取走 literature 域。 */
+  get writer(): WriterService {
+    if (this.writerRef === undefined) {
+      this.writerRef = new WriterService({
+        fs: (this.ctx as { fs?: SrwFsLike }).fs,
+        rootDir: () => this.currentRoot(),
+        libraryEntry: async (project, key) => await this.literature.entry(project, key),
+      })
+    }
+    return this.writerRef
   }
 
   static async open(ctx: unknown, rawConfig: SrwConfig): Promise<SrwService> {
