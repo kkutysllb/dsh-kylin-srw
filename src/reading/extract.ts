@@ -221,9 +221,11 @@ function groupBlocks(lines: readonly ColumnLine[]): RawBlock[] {
 function kindOf(block: { text: string; firstLine: string; size: number; lineCount: number }, bodySize: number): BlockKind {
   const first = block.firstLine
   // 标题常与正文同号（粗体在字形里，文本层看不到）且后紧跟正文（间距小于
-  // 段合并阈值）→ 用**首行**判、允许标题后带少量正文（lineCount ≤ 3）
+  // 段合并阈值）→ 用**首行**判、允许标题后带少量正文（lineCount ≤ 3）；
+  // 罗马数字节号（I. / IV. / XII.，ACM/IEEE 体例）同判
   if (block.lineCount <= 3 && first.length <= 120
-    && (/^\d+(\.\d+)*\s+\S/.test(first) || /^(abstract|introduction|related work|conclusion|references|摘要|引言|结论)/i.test(first))) {
+    && (/^\d+(\.\d+)*\s+\S/.test(first) || /^[IVXLCDM]+\.\s+\S/.test(first)
+      || /^(abstract|introduction|related work|conclusion|references|摘要|引言|结论)/i.test(first))) {
     return first.toLowerCase().startsWith('abstract') || first.startsWith('摘要') ? 'abstract' : 'heading'
   }
   // 图注/表注：`Figure 3: …` / `Table 2. …`（带编号+冒号/点，避免把
@@ -294,16 +296,27 @@ export function refineBlocks(
     }
   }
 
-  // 3) 参考文献段：首个首行 References 的块之后全部 → reference
+  // 3) 参考文献段：References 标题的三种真论文形态——独立成块（→ heading）、
+  //    与首条目合并成块（→ reference，内容就是条目）、被前段末行吞并
+  //    （块本体保持 para 可译，只开启 refs 段）。之后全部 → reference
   //    （英文原样保留，不翻译——参考文献译成中文只会破坏检索）
+  const REFS_ENTRY_RE = /^references\s*\[\d+\]|^references\s+[A-Z]/i
   let inRefs = false
   for (const block of blocks) {
-    if (!inRefs && /^(references|bibliography)\s*$/i.test(block.text)) {
-      inRefs = true
-      kinds.set(block.id, 'heading')
+    if (!inRefs) {
+      const text = block.text
+      if (/^references\s*$/i.test(text)) {
+        inRefs = true
+        kinds.set(block.id, 'heading')
+      } else if (REFS_ENTRY_RE.test(text)) {
+        inRefs = true
+        kinds.set(block.id, 'reference')
+      } else if (/\breferences\s*$/i.test(text) && text.length <= 120 && !/[.!?]$/.test(text)) {
+        inRefs = true // 「work. References」形态：标题吞进前段末尾
+      }
       continue
     }
-    if (inRefs) kinds.set(block.id, 'reference')
+    kinds.set(block.id, 'reference')
   }
 
   // 4) 图内标注碎片：单行、≤60 字符、无句末标点、上下间隙都显著大于行距、
@@ -312,10 +325,16 @@ export function refineBlocks(
   for (let index = 1; index < blocks.length - 1; index += 1) {
     const block = blocks[index]!
     if (kinds.get(block.id) !== 'para') continue
-    if (block.text.length > 60 || block.text.length === 0) continue
+    // 真图内标注都是短语级（'Block Under'、'Erase Words'、'(4)'）；跨图续行
+    // 片段虽孤立但长度/词数明显是句子（fan2024 活体教训）
+    if (block.text.length > 30) continue
+    if (block.text.split(/\s+/).filter(Boolean).length > 4) continue
     if (block.size > bodySize * 1.15) continue // 放大字号是标题系，不当碎片
     if (block.bbox.yTop - block.bbox.yBottom > block.size * 1.9) continue // 多行块不算
     if (/[.!?。]$/.test(block.text)) continue
+    // 小写开头 = 正文跨图/跨栏的续行片段（真论文 fan2024 误伤教训），真
+    // 图内标注几乎总是首字母大写/数字/括号开头
+    if (/^\s*[a-z]/.test(block.text)) continue
     const prev = blocks[index - 1]!
     const next = blocks[index + 1]!
     const gapAbove = sameColumn(prev.bbox, block.bbox) ? verticalGap(prev.bbox, block.bbox) : Number.POSITIVE_INFINITY

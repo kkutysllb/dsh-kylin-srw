@@ -74,6 +74,29 @@ test('refine：References 之后全部 → reference（英文原样保留的翻�
   assert.equal(refined.find(b => b.id === 'p1-b1')?.kind, 'para')
 })
 
+test('refine：References 与首条目合并成块也触发（真论文活体教训）', () => {
+  // showharness p18-b2 原文形状：标题行和 [1] 条目被 groupBlocks 合进一块
+  // ——块内容就是条目 → reference（进附录 C，不翻译）
+  const merged = blk('p18-b2', 18, 1, 'References [1] Michael Ahn, Anthony Brohan, Noah Brown, and many more authors of the RT-1 paper here.', { yTop: 700, yBottom: 689 })
+  const refined = refineBlocks([merged], { 18: 792 })
+  assert.equal(refined[0]?.kind, 'reference', '条目合并块应触发且归 reference')
+  // fan2024 p13-b1 原文形状：全大写 REFERENCES + 从 [30] 起的双栏续排
+  const caps = blk('p13-b1', 13, 2, 'REFERENCES [30] A. D. Sarma, L. Fang, N. Gupta, and H. Lee, Finding related tables in data lakes for sure.', { yTop: 700, yBottom: 689 })
+  const refinedCaps = refineBlocks([caps], { 13: 792 })
+  assert.equal(refinedCaps[0]?.kind, 'reference', '全大写 REFERENCES 同判')
+})
+
+test('refine：References 被前段末行吞并 → 开启 refs 段但块本体保持可译', () => {
+  // recursive p28-b2 原文形状：双栏接排把标题吞进前段末尾
+  const blocks = [
+    blk('p28-b2', 28, 0, 'Experiment results compare favorably against all baselines across tasks and work. References', { yTop: 700, yBottom: 689 }),
+    blk('p28-b3', 28, 1, '[1] A. Radford et al. Learning transferable visual models from natural language.', { yTop: 660, yBottom: 649 }),
+  ]
+  const refined = refineBlocks(blocks, { 28: 792 })
+  assert.equal(refined[0]?.kind, 'para', '吞并块含正文，保持 para（可译）')
+  assert.equal(refined[1]?.kind, 'reference', '其后条目进 reference')
+})
+
 test('refine：孤立单行碎片 + 附近有图注 → figlabel；正文连续段不误伤', () => {
   const blocks = [
     blk('p1-b1', 1, 0, 'A normal paragraph line about the experimental setup here.', { yTop: 700, yBottom: 689 }),
@@ -85,4 +108,16 @@ test('refine：孤立单行碎片 + 附近有图注 → figlabel；正文连续�
   assert.equal(refined.find(b => b.id === 'p1-b2')?.kind, 'figlabel', '孤立短碎片应判 figlabel')
   assert.equal(refined.find(b => b.id === 'p1-b1')?.kind, 'para', '连续正文不误伤')
   assert.equal(refined.find(b => b.id === 'p1-b4')?.kind, 'para', '连续正文不误伤')
+})
+
+test('refine：小写开头的跨图续行片段不判 figlabel（fan2024 活体误伤教训）', () => {
+  const blocks = [
+    blk('p1-b1', 1, 0, 'She compares diversity reports issued by major tech compa-', { yTop: 700, yBottom: 689 }),
+    blk('p1-b2', 1, 1, 'tech companies in 2021 (top blue table in Figure 1). The', { yTop: 620, yBottom: 609, x0: 60, x1: 400 }),
+    blk('p1-b3', 1, 2, 'Figure 1: Diversity numbers across two sources.', { kind: 'caption', yTop: 560, yBottom: 549, x0: 60, x1: 300 }),
+    blk('p1-b4', 1, 3, 'user has access to 2021 numbers which contradict the news article text.', { yTop: 500, yBottom: 489 }),
+  ]
+  const refined = refineBlocks(blocks, { 1: 792 })
+  assert.equal(refined.find(b => b.id === 'p1-b2')?.kind, 'para', '小写开头的续行是正文，不是图内标注')
+  assert.equal(refined.find(b => b.id === 'p1-b4')?.kind, 'para', '小写开头的续行是正文，不是图内标注')
 })
