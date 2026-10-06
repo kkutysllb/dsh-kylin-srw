@@ -6,6 +6,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ClientContext } from './protocol-client.ts'
 import { DiagView } from './view.tsx'
+import { parsePaper } from '../reading/render.ts'
 
 const RPC_CHANNEL = '/dsh-kylin-srw'
 
@@ -71,6 +72,26 @@ interface WatchSubLite {
   readonly lastResult?: { readonly at: string; readonly kind: string; readonly fresh?: number; readonly error?: string }
 }
 
+interface ReadingStatusLite {
+  readonly paperKey: string
+  readonly extracted: boolean
+  readonly pages: number
+  readonly blocks: number
+  readonly translated: number
+  readonly verified: number
+  readonly mismatch: number
+  readonly orphan: number
+  readonly missing: number
+  readonly llmAvailable: boolean
+}
+
+interface ReadingViewBlock {
+  readonly id: string
+  readonly state: 'verified' | 'mismatch' | 'orphan'
+  readonly sourceText: string
+  readonly translation?: string
+}
+
 async function rpc<T>(ctx: ClientContext, endpoint: string, payload?: unknown): Promise<T> {
   const rpcFace = ctx.connection?.rpc
   const call = rpcFace?.call
@@ -92,6 +113,23 @@ function fmtTime(iso: string): string {
   if (delta < 3_600_000) return `${Math.floor(delta / 60_000)} 分钟前`
   if (delta < 86_400_000) return `${Math.floor(delta / 3_600_000)} 小时前`
   return new Date(at).toLocaleDateString()
+}
+
+/** 库条目 key（如 arxiv:1706.03762）→ 合法 paperKey（PAPER_KEY_RE 口径）。 */
+function paperKeyOfLite(key: string): string {
+  const slug = key.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 64).replace(/-+$/g, '')
+  return slug === '' ? 'paper' : slug
+}
+
+/** 库里存的 pdf.file 是根相对（含项目前缀）；reading.extract 要项目相对。 */
+function pdfPathOfEntry(file: string, project: string): string {
+  return file.startsWith(`${project}/`) ? file.slice(project.length + 1) : file
+}
+
+const READING_STATE_LABELS: Record<string, string> = {
+  verified: '✓ 源段一致',
+  mismatch: '⚠ 源文被改',
+  orphan: '孤立块',
 }
 
 export function WorkbenchView({ ctx }: { readonly ctx: ClientContext }): React.ReactElement {
@@ -119,6 +157,12 @@ export function WorkbenchView({ ctx }: { readonly ctx: ClientContext }): React.R
   const [watchBusy, setWatchBusy] = useState(false)
   const [watchNotice, setWatchNotice] = useState<string | null>(null)
   const [confirmingWatchId, setConfirmingWatchId] = useState<string | null>(null)
+  const [readingSelKey, setReadingSelKey] = useState('')
+  const [readingKey, setReadingKey] = useState('')
+  const [readingStatus, setReadingStatus] = useState<ReadingStatusLite | null>(null)
+  const [readingView, setReadingView] = useState<readonly ReadingViewBlock[] | null>(null)
+  const [readingBusy, setReadingBusy] = useState(false)
+  const [readingNotice, setReadingNotice] = useState<string | null>(null)
   const alive = useRef(true)
   const confirmTimer = useRef<number | undefined>(undefined)
 
@@ -513,6 +557,82 @@ export function WorkbenchView({ ctx }: { readonly ctx: ClientContext }): React.R
     }
   }, [ctx, litQuery, litSource, overview])
 
+  /* ── 精读（M4）：抽取 → 逐块翻译（哈希缓存）→ 校验；双语块对照，灯钉块上 ── */
+  const loadReadingContent = useCallback(async (project: string, paperKey: string): Promise<void> => {
+    try {
+      const value = await rpc<{
+        markdown: string
+        verify: {
+          states: Readonly<Record<string, 'verified' | 'mismatch' | 'orphan'>>
+        }
+      }>(ctx, 'reading.content', { project, paperKey })
+      if (!alive.current) return
+      setReadingView(parsePaper(value.markdown).map(block => ({
+        id: block.id,
+        state: value.verify.states[block.id] ?? 'orphan',
+        sourceText: block.sourceText,
+        ...(block.translation !== undefined ? { translation: block.translation } : {}),
+      })))
+    } catch {
+      if (alive.current) setReadingView(null)
+    }
+  }, [ctx])
+
+  const loadReadingAll = useCallback(async (project: string, paperKey: string): Promise<void> => {
+    try {
+      const value = await rpc<ReadingStatusLite>(ctx, 'reading.status', { project, paperKey })
+      if (!alive.current) return
+      setReadingStatus(value)
+      if (value.extracted) await loadReadingContent(project, paperKey)
+      else if (alive.current) setReadingView(null)
+    } catch {
+      if (alive.current) { setReadingStatus(null); setReadingView(null) }
+    }
+  }, [ctx, loadReadingContent])
+
+  /* 换项目或换论文 → 拉状态；已抽取则顺带展示已有双语内容 */
+  useEffect(() => {
+    const project = overview?.activeProject
+    const paperKey = readingKey.trim()
+    if (project === undefined || project === '' || paperKey === '') {
+      setReadingStatus(null)
+      setReadingView(null)
+      return
+    }
+    void loadReadingAll(project, paperKey)
+  }, [overview?.activeProject, readingKey, loadReadingAll])
+
+  const readingAction = async (action: 'extract' | 'translate' | 'verify'): Promise<void> => {
+    const project = overview?.activeProject ?? ''
+    const paperKey = readingKey.trim()
+    if (project === '' || paperKey === '') { setReadingNotice('先打开项目并选择论文'); return }
+    setReadingBusy(true)
+    try {
+      if (action === 'extract') {
+        const file = pdfEntries.find(entry => paperKeyOfLite(entry.key) === paperKey)?.pdf?.file
+        if (file === undefined) { setReadingNotice('该 paperKey 没有对应的 PDF 条目（从下拉选择会自动生成）'); return }
+        const result = await rpc<{ pages: number; blocks: number; migrated: number; orphan: number }>(
+          ctx, 'reading.extract', { project, paperKey, pdfPath: pdfPathOfEntry(file, project) },
+        )
+        setReadingNotice(`已抽取：${result.pages} 页 ${result.blocks} 块（迁移 ${result.migrated}，孤儿 ${result.orphan}）`)
+      } else if (action === 'translate') {
+        setReadingNotice('翻译中——逐块走 LLM，首次全量可能要几分钟（缓存命中会跳过）…')
+        const result = await rpc<ReadingStatusLite>(ctx, 'reading.translate', { project, paperKey })
+        setReadingNotice(`翻译完成：已译 ${result.translated}/${result.blocks} 块`)
+      } else {
+        const result = await rpc<{ verified: readonly string[]; mismatch: readonly string[]; orphan: readonly string[]; missing: readonly string[] }>(
+          ctx, 'reading.verify', { project, paperKey },
+        )
+        setReadingNotice(`校验：一致 ${result.verified.length}，源文被改 ${result.mismatch.length}，孤立 ${result.orphan.length}，丢失 ${result.missing.length}`)
+      }
+      await loadReadingAll(project, paperKey)
+    } catch (cause) {
+      setReadingNotice(`操作失败：${String(cause)}`)
+    } finally {
+      if (alive.current) setReadingBusy(false)
+    }
+  }
+
   /* 活动项目变化 → 刷新文献库列表 */
   useEffect(() => {
     const slug = overview?.activeProject
@@ -521,6 +641,7 @@ export function WorkbenchView({ ctx }: { readonly ctx: ClientContext }): React.R
 
   const activeStage = overview?.activeStage
   const rootDir = overview?.rootDir ?? ''
+  const pdfEntries = libEntries.filter(entry => entry.pdf !== undefined)
 
   return (
     <div className='srw-panel'>
@@ -687,6 +808,72 @@ export function WorkbenchView({ ctx }: { readonly ctx: ClientContext }): React.R
               ))}
             </ul>
           </>
+        ) : null}
+      </div>
+
+      <div className='srw-card'>
+        <h2>精读{readingStatus !== null ? `：${readingStatus.paperKey}` : ''}</h2>
+        <p className='srw-detail'>PDF 抽块 → 逐块翻译（按哈希缓存）→ 双语对照。校验灯：✓ 源段一致 / ⚠ 源文被改 / 孤立 = 块不在 source_map。译文可随手改，源段动了就会亮 ⚠。</p>
+        {readingNotice !== null ? <p className='srw-detail'>{readingNotice}</p> : null}
+        {pdfEntries.length === 0 ? (
+          <p className='srw-detail'>项目库里还没有带 PDF 的条目——先在上方文献卡「取 PDF」。</p>
+        ) : (
+          <div className='srw-actions'>
+            <select
+              className='srw-input'
+              value={pdfEntries.some(entry => entry.key === readingSelKey) ? readingSelKey : (pdfEntries[0]?.key ?? '')}
+              onChange={event => {
+                const picked = event.target.value
+                setReadingSelKey(picked)
+                const entry = pdfEntries.find(item => item.key === picked)
+                setReadingKey(entry === undefined ? '' : paperKeyOfLite(entry.key))
+              }}
+            >
+              {pdfEntries.map(entry => (
+                <option key={entry.key} value={entry.key}>
+                  {entry.identity.title.slice(0, 40)}（{entry.key}）
+                </option>
+              ))}
+            </select>
+            <input
+              className='srw-input'
+              placeholder='paperKey'
+              value={readingKey}
+              onChange={event => { setReadingKey(event.target.value) }}
+            />
+            <button className='srw-btn primary' disabled={readingBusy || readingKey.trim() === ''} onClick={() => { void readingAction('extract') }}>抽取</button>
+            <button className='srw-btn' disabled={readingBusy || readingKey.trim() === ''} onClick={() => { void readingAction('translate') }}>翻译</button>
+            <button className='srw-btn' disabled={readingBusy || readingKey.trim() === ''} onClick={() => { void readingAction('verify') }}>校验</button>
+          </div>
+        )}
+        {readingStatus !== null ? (
+          <p className='srw-project-meta'>
+            <span>{readingStatus.pages} 页</span>
+            <span>·</span>
+            <span>块 {readingStatus.blocks}</span>
+            <span>·</span>
+            <span>已译 {readingStatus.translated}</span>
+            <span>·</span>
+            <span>✓ {readingStatus.verified} / ⚠ {readingStatus.mismatch} / 孤 {readingStatus.orphan} / 丢 {readingStatus.missing}</span>
+            <span>·</span>
+            <span>LLM {readingStatus.llmAvailable ? '可用' : '不可用（翻译需宿主默认模型）'}</span>
+          </p>
+        ) : null}
+        {readingView !== null ? (
+          <ul className='srw-list'>
+            {readingView.map(block => (
+              <li key={block.id} className='srw-item'>
+                <div className='srw-project-main'>
+                  <code>{block.id}</code>
+                  <span className={`srw-badge ${block.state === 'verified' ? '' : 'bad'}`}>{READING_STATE_LABELS[block.state] ?? block.state}</span>
+                </div>
+                <p className='srw-detail' style={{ whiteSpace: 'pre-wrap' }}>{block.sourceText}</p>
+                {block.translation !== undefined ? (
+                  <p style={{ whiteSpace: 'pre-wrap', margin: '4px 0 0' }}>{block.translation}</p>
+                ) : null}
+              </li>
+            ))}
+          </ul>
         ) : null}
       </div>
 

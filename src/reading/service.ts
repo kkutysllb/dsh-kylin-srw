@@ -260,6 +260,19 @@ export class ReadingService {
     return verifyPaper(markdown, map)
   }
 
+  /** paper.md 原文（视图渲染用）。 */
+  async content(project: string, paperKey: string): Promise<{ markdown: string; verify: VerifyReport }> {
+    const map = await this.loadMap(project, paperKey)
+    if (map === undefined) throw new ServiceError('NOT_FOUND', `未抽取：${paperKey}`)
+    let markdown: string
+    try {
+      markdown = await readFile(this.paperPath(project, paperKey), 'utf8')
+    } catch {
+      throw new ServiceError('NOT_FOUND', `paper.md 未生成：${paperKey}`)
+    }
+    return { markdown, verify: verifyPaper(markdown, map) }
+  }
+
   async verify(project: string, paperKey: string): Promise<VerifyReport> {
     const map = await this.loadMap(project, paperKey)
     if (map === undefined) throw new ServiceError('NOT_FOUND', `未抽取：${paperKey}`)

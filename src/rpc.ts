@@ -364,6 +364,10 @@ export async function handleSrwRpc(
         const body = record(payload)
         return ok(await service.reading.verify(reqString(body, 'project'), reqString(body, 'paperKey')))
       }
+      case 'reading.content': {
+        const body = record(payload)
+        return ok(await service.reading.content(reqString(body, 'project'), reqString(body, 'paperKey')))
+      }
       case 'reading.glossary': {
         const body = record(payload)
         const entries = body['entries']

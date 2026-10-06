@@ -66,6 +66,11 @@ export declare class ReadingService {
     private rewriteMapTranslations;
     /** 渲染 paper.md（以 map+sources+缓存现值为准），渲染后 verify 状态写进锚。 */
     private renderPaper;
+    /** paper.md 原文（视图渲染用）。 */
+    content(project: string, paperKey: string): Promise<{
+        markdown: string;
+        verify: VerifyReport;
+    }>;
     verify(project: string, paperKey: string): Promise<VerifyReport>;
     status(project: string, paperKey: string): Promise<ReadingStatus>;
 }
