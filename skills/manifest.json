@@ -11,6 +11,18 @@
       "description": "文献筛选与入库工作流：把研究方向/论文线索转成三源检索、筛选、入库到指定项目。",
       "whenToUse": "用户想找论文、查文献、把检索结果入库到科研项目时使用。",
       "dir": "literature-triage"
+    },
+    {
+      "name": "paper-drafting",
+      "description": "论文起草工作流：按深度档位（D1/D2/D3）起草大纲与正文，经 srw_paper 落盘（G1 确认门 + 编译 + 引用审计）。",
+      "whenToUse": "用户要写论文、起草章节、生成大纲（draft a paper / 写作 / 起草）时使用。",
+      "dir": "paper-drafting"
+    },
+    {
+      "name": "venue-fit",
+      "description": "投稿匹配与合规整改工作流：对照刊物要求与档位核查论文现状，输出机读差距清单与整改路径。",
+      "whenToUse": "用户问适合投哪、离投稿还差什么、或要跑合规检查时使用。",
+      "dir": "venue-fit"
     }
   ]
 }

@@ -24,6 +24,7 @@
 | [0203 M2 详细计划](docs/02-plan/0203-M2-文献通路.md) | RateGate / 三源适配 / 去重 / library.json / PDF+SSRF / BibTeX / 撤稿 / 文献视图+工具；**已完成**，文末「M2 实施实录」含 9 条真网/实测勘误（含 lossless 工具输出、元数据自愈、跨源身份折叠） |
 | [0204 M3 计划](docs/02-plan/0204-M3-定期抓取.md) | 订阅抓取（触发绑宿主内置「自动化任务」ctx.schedule，执行=host 确定性代码）/ .srw/watch.json / srw_watch 工具 / 撤稿类型区分（corrigendum≠retraction）；**已完成**，文末「M3 实施实录」含 Cordis 围栏等 4 条勘误 |
 | [0205 M4 计划](docs/02-plan/0205-M4-精读.md) | 精读（R6 尖刀）：pdfjs 抽取/双栏识别/source_map 稳定块 ID/翻译链（llm.stream+并发闸）/哈希缓存+术语表/paper.md+校验门/精读视图；**已完成**，文末「M4 实施实录」含活体验收（vaswani 真 PDF 端到端全绿）、按日期归档 PDF（readings/<date>/）、**译注版改造**（版面杂讯/图内碎片/参考文献分类、全文导读+每节速览/精读备注、译注版 PDF 结构）与 3 条勘误 |
+| [0206 M5 计划](docs/02-plan/0206-M5-论文线.md) | 论文线与刊物分级（R4/R5）：TeX 引擎探测（全缺不炸）/venue schema+注册表（confidence+sources 强制）/深度档 D1-D3 三落点/机读合规 checks/骨架生成/编译+日志解析（79 列折行回接）/大纲 G1 确认门/引用审计+一键补 BibTeX/快照回滚（哈希防线）/srw_paper 工具/论文视图/技能 paper-drafting·venue-fit；**已完成**（真引擎活体待装 tectonic 后补验） |
 
 ## 定位（一句话）
 
