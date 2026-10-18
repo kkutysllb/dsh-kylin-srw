@@ -11,3 +11,6 @@ build/
 
 # 本地真引擎验收工具（tectonic 二进制与 TeX bundle 缓存，不入库）
 .tools/
+
+# gh CLI 本地缓存（CI 日志拉取；XDG_CACHE_HOME 重定向进来）
+.cache/
