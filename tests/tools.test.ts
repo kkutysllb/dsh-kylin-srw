@@ -10,6 +10,7 @@ import { readFileSync, existsSync } from 'node:fs'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { approvalDecision, callerFrom, srwProjectToolDef, srwLiteratureToolDef, srwWatchToolDef, srwReadToolDef, searchOutputFor, SRW_TOOL_NAME, SRW_LIT_TOOL_NAME, SRW_WATCH_TOOL_NAME, SRW_READ_TOOL_NAME } from '../src/tools.ts'
 import { buildFixturePdf } from './fixture-pdf.ts'
+import { resolveCjkFont } from '../src/reading/pdfdoc.ts'
 import type { LlmPort } from '../src/reading/translator.ts'
 import { stripFrontmatter, registerBundledSkills, type SrwSkillsService } from '../src/skills.ts'
 import { SrwService } from '../src/service.ts'
@@ -311,7 +312,7 @@ test('srw_read：全部动作豁免审批（授权来自会话显式意图）', 
   }
 })
 
-test('srw_read 工具：status 待译清单 → 分批 translate → remaining 归零 → export 归档', async () => {
+test('srw_read 工具：status 待译清单 → 分批 translate → remaining 归零 → export 归档', { skip: resolveCjkFont() === undefined ? '本机无 CJK 字体（export 归档 PDF 渲染需要）' : false }, async () => {
   const root = await mkdtemp(join(tmpdir(), 'srw-read-tool-'))
   try {
     const fsLike = {

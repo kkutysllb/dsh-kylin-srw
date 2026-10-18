@@ -63,7 +63,7 @@ const FONT_CANDIDATES: readonly { readonly path: string; readonly name?: string 
   { path: '/System/Library/Fonts/PingFang.ttc', name: 'PingFangSC-Regular' },
   { path: '/System/Library/Fonts/Supplemental/Songti.ttc', name: 'STSongti-SC-Regular' },
   { path: '/Library/Fonts/Arial Unicode.ttf' },
-  { path: '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc', name: 'NotoSansCJK-Regular' },
+  { path: '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc', name: 'NotoSansCJKsc-Regular' },
   { path: '/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc', name: 'NotoSansCJKsc-Regular' },
 ]
 

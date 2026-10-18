@@ -13,6 +13,7 @@ import { ReadingService } from '../src/reading/service.ts'
 import { extractPdfBlocks } from '../src/reading/extract.ts'
 import { resolveCjkFont, renderReadingPdf } from '../src/reading/pdfdoc.ts'
 import { parseSectionOutput } from '../src/reading/notes.ts'
+import { ServiceError } from '../src/service.ts'
 import type { LlmPort } from '../src/reading/translator.ts'
 
 function fakeFs() {
@@ -77,14 +78,16 @@ test('notes：解析【本节速览】/◆精读备注 分段；无标记整段�
 
 test('pdfdoc：无字体环境明确报 FONT_MISSING（回退链全 miss 时 fail-closed）', async () => {
   const font = resolveCjkFont()
-  if (font !== undefined) return // 本机有字体：该断言交给 CI/无字体机
+  if (font !== undefined) return // 本机有字体：该断言交给无字体机（CI 已装 Noto CJK，同样在此提前返回）
+  // 断言 error.code 而非消息正则：ServiceError.toString() 只含 message，
+  // /FONT_MISSING/ 匹配消息恒假——此分支在 CI 首跑前从未真跑过（首跑实测咬出）。
   await assert.rejects(
     () => renderReadingPdf({
       paperKey: 'x', titleZh: 't', titleEn: 't', exportedAt: 'now',
       summary: { pages: 1, blocks: 0, translated: 0, verified: 0, mismatch: 0, orphan: 0, missing: 0 },
       flow: [], references: [],
     }),
-    /FONT_MISSING/,
+    (err: unknown) => err instanceof ServiceError && err.code === 'FONT_MISSING',
   )
 })
 
@@ -135,7 +138,7 @@ test('pdfdoc：译注版结构（封面/导读/速览/备注盒/图内标注/参
   assert.ok(text.includes('免责'), '免责说明未回读')
 })
 
-test('notes 全链：翻译 → generateNotes（导读+节备注，失败可恢复）→ export 含分析层', async () => {
+test('notes 全链：翻译 → generateNotes（导读+节备注，失败可恢复）→ export 含分析层', { skip: resolveCjkFont() === undefined ? '本机无 CJK 字体（译注版 PDF 渲染需要）' : false }, async () => {
   const root = await mkdtemp(join(tmpdir(), 'srw-pdf-notes-'))
   try {
     const service = new ReadingService({
