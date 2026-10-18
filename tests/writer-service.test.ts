@@ -171,6 +171,39 @@ test('writer 全链：venue 应用 → 骨架 → 大纲 G1 → 确认 → 节�
   }
 })
 
+test('writer：snapshotTag 打标签 + restore 返回 materialDrift（服务层，8.1）', async () => {
+  const { service, root } = await makeService()
+  try {
+    await service.venueApply('demo', 'ieee-journal', 'D1')
+    await service.scaffold('demo', { title: 'Tagged' })
+    await service.outlineSave('demo', [{ title: 'Intro', intent: '引言', targetWords: 100 }])
+    await service.outlineConfirm('demo')
+    await service.sectionWrite('demo', 's1', '\\section{Intro}\nbody\n')
+    const run = await service.compile('demo')
+    assert.ok(run.snapshot !== undefined)
+
+    await service.snapshotTag('demo', run.snapshot!.id, { label: 'baseline', note: '首轮' })
+    const listed = (await service.snapshotList('demo')).find(item => item.id === run.snapshot!.id)
+    assert.equal(listed?.label, 'baseline', '服务层标签可见')
+    assert.equal(listed?.note, '首轮')
+
+    const result = await service.snapshotRestore('demo', run.snapshot!.id)
+    assert.ok(result.restored.length > 0)
+    assert.equal(result.materialDrift, undefined, '无 materialsHash 记录 → 不判漂移')
+
+    await mkdir(join(root, 'demo', 'materials'), { recursive: true })
+    await writeFile(join(root, 'demo', 'materials', 'manifest.json'), '{"schemaVersion":1,"artifacts":[]}\n')
+    await service.sectionWrite('demo', 's1', '\\section{Intro}\nbody v2\n')
+    const run2 = await service.compile('demo')
+    assert.ok(run2.snapshot !== undefined)
+    await writeFile(join(root, 'demo', 'materials', 'manifest.json'), '{"schemaVersion":1,"artifacts":[{"x":1}]}\n')
+    const drifted = await service.snapshotRestore('demo', run2.snapshot!.id)
+    assert.equal(drifted.materialDrift, true, 'materials 变更 → restore 报漂移提示')
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 test('writer：无引擎 → ENGINE_MISSING（引导安装，不是崩）；outline.prompt 分档', async () => {
   const root = await mkdtemp(join(tmpdir(), 'srw-writer-'))
   try {

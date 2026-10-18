@@ -7,11 +7,21 @@ import { mkdir, readdir, readFile, rm, writeFile, copyFile } from 'node:fs/promi
 import { basename, dirname, join } from 'node:path'
 import { ServiceError } from '../service.ts'
 
+export type SnapshotKind = 'compile' | 'manual' | 'submission' | 'revision'
+
 export interface SnapshotManifest {
   readonly schemaVersion: 1
   readonly createdAt: string
   readonly engine?: string
   readonly compileMs?: number
+  /** 8.1 起可选：留档来源（默认 compile）。outlineHash/venueHash/pdfSha 不另设——
+   * files 里 state/outline.json、state/venue.json、build/main.pdf 已带哈希，重复会漂移。 */
+  readonly kind?: SnapshotKind
+  readonly label?: string
+  readonly note?: string
+  /** 项目级 materials/manifest.json 的 sha256（不入快照本体，只记哈希）；
+   * restore 时与现状比对 → materialDrift 提示（不阻断）。 */
+  readonly materialsHash?: string
   readonly files: Readonly<Record<string, string>>
 }
 
@@ -48,17 +58,24 @@ async function collectFiles(paperDir: string): Promise<Record<string, Buffer>> {
   return files
 }
 
-export async function createSnapshot(paperDir: string, options: { engine?: string; compileMs?: number } = {}): Promise<{ id: string; files: number; bytes: number }> {
+export async function createSnapshot(paperDir: string, options: { engine?: string; compileMs?: number; kind?: SnapshotKind; note?: string } = {}): Promise<{ id: string; files: number; bytes: number }> {
   const files = await collectFiles(paperDir)
   if (files['main.tex'] === undefined) {
     throw new ServiceError('NOT_FOUND', 'paper/main.tex 不存在——先骨架生成再编译/留档')
   }
   const id = new Date().toISOString().replace(/[:.]/g, '-')
+  // materials manifest 只记哈希不复制（响应信/投稿包用它判漂移）；仅真项目域（paper/）生效。
+  const materialsHash = basename(paperDir) === 'paper'
+    ? await readFile(join(dirname(paperDir), 'materials', 'manifest.json')).then(data => sha256(data)).catch(() => undefined)
+    : undefined
   const manifest: SnapshotManifest = {
     schemaVersion: 1,
     createdAt: new Date().toISOString(),
+    kind: options.kind ?? 'compile',
     ...(options.engine !== undefined ? { engine: options.engine } : {}),
     ...(options.compileMs !== undefined ? { compileMs: options.compileMs } : {}),
+    ...(options.note !== undefined ? { note: options.note } : {}),
+    ...(materialsHash !== undefined ? { materialsHash } : {}),
     files: Object.fromEntries(Object.entries(files).map(([path, data]) => [path, sha256(data)])),
   }
   const snapshotDir = join(paperDir, 'snapshots', id)
@@ -78,6 +95,10 @@ export interface SnapshotInfo {
   readonly id: string
   readonly createdAt: string
   readonly engine?: string
+  readonly kind?: SnapshotKind
+  readonly label?: string
+  readonly note?: string
+  readonly materialsHash?: string
   readonly files: number
 }
 
@@ -93,11 +114,47 @@ export async function listSnapshots(paperDir: string): Promise<readonly Snapshot
         id,
         createdAt: manifest.createdAt,
         ...(manifest.engine !== undefined ? { engine: manifest.engine } : {}),
+        ...(manifest.kind !== undefined ? { kind: manifest.kind } : {}),
+        ...(manifest.label !== undefined ? { label: manifest.label } : {}),
+        ...(manifest.note !== undefined ? { note: manifest.note } : {}),
+        ...(manifest.materialsHash !== undefined ? { materialsHash: manifest.materialsHash } : {}),
         files: Object.keys(manifest.files).length,
       })
     } catch { /* 坏 manifest 跳过 */ }
   }
   return infos.sort((a, b) => b.id.localeCompare(a.id))
+}
+
+/** 打标签（8.1）：给既有快照写 label/note——manifest 是普通 JSON，直接改写后
+ * 落回（不复制快照本体）。label 必填 ≤80 字符，note ≤500。 */
+export async function tagSnapshot(paperDir: string, id: string, tag: { readonly label: string; readonly note?: string }): Promise<SnapshotInfo> {
+  if (!/^[A-Za-z0-9._-]+$/.test(id) || id === '.' || id === '..') {
+    throw new ServiceError('INVALID', `快照 id 非法：${JSON.stringify(id)}`)
+  }
+  const label = tag.label.trim()
+  if (label === '' || label.length > 80) {
+    throw new ServiceError('INVALID', `label 必填且 ≤80 字符：${JSON.stringify(tag.label)}`)
+  }
+  if (tag.note !== undefined && tag.note.length > 500) {
+    throw new ServiceError('INVALID', 'note ≤500 字符')
+  }
+  const manifestPath = join(paperDir, 'snapshots', id, 'manifest.json')
+  const raw = await readFile(manifestPath, 'utf8').catch(() => {
+    throw new ServiceError('NOT_FOUND', `快照不存在：${id}`)
+  })
+  const manifest = JSON.parse(raw) as SnapshotManifest
+  const next: SnapshotManifest = { ...manifest, label, ...(tag.note !== undefined ? { note: tag.note } : {}) }
+  await writeFile(manifestPath, JSON.stringify(next, null, 2) + '\n')
+  return {
+    id,
+    createdAt: manifest.createdAt,
+    ...(manifest.engine !== undefined ? { engine: manifest.engine } : {}),
+    ...(manifest.kind !== undefined ? { kind: manifest.kind } : {}),
+    label,
+    ...(tag.note !== undefined ? { note: tag.note } : {}),
+    ...(manifest.materialsHash !== undefined ? { materialsHash: manifest.materialsHash } : {}),
+    files: Object.keys(manifest.files).length,
+  }
 }
 
 /** 快照允许回滚的路径白名单：manifest 是磁盘上的普通 JSON，可能被手改/注入，
@@ -114,8 +171,9 @@ export interface RestoreSnapshotOptions {
 }
 
 /** 回滚：逐文件哈希比对 manifest；覆盖当前 paper/（state/* 写回项目 .srw/）。
- * 返回恢复的文件清单。 */
-export async function restoreSnapshot(paperDir: string, id: string, options: RestoreSnapshotOptions = {}): Promise<readonly string[]> {
+ * 返回恢复的文件清单；快照带 materialsHash 时附 materialDrift（现状 materials
+ * manifest 与留档不一致/丢失 → true，仅提示不阻断——漂移可能是正常新素材）。 */
+export async function restoreSnapshot(paperDir: string, id: string, options: RestoreSnapshotOptions = {}): Promise<{ restored: readonly string[]; materialDrift?: boolean }> {
   if (!/^[A-Za-z0-9._-]+$/.test(id) || id === '.' || id === '..') {
     throw new ServiceError('INVALID', `快照 id 非法：${JSON.stringify(id)}`)
   }
@@ -163,5 +221,10 @@ export async function restoreSnapshot(paperDir: string, id: string, options: Res
       }
     }
   } catch { /* 无 sections 目录 */ }
-  return restored
+  if (manifest.materialsHash !== undefined) {
+    const current = await readFile(join(projectDir, 'materials', 'manifest.json')).catch(() => undefined)
+    const materialDrift = current === undefined || sha256(current) !== manifest.materialsHash
+    return { restored, materialDrift }
+  }
+  return { restored }
 }

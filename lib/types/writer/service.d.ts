@@ -125,7 +125,15 @@ export declare class WriterService {
     }>;
     private existsSafe;
     snapshotList(project: string): Promise<readonly SnapshotInfo[]>;
-    snapshotRestore(project: string, id: string): Promise<readonly string[]>;
+    /** 快照打标签（8.1）：manifest 记 label/note，snapshot.list 可见。 */
+    snapshotTag(project: string, id: string, tag: {
+        readonly label: string;
+        readonly note?: string;
+    }): Promise<SnapshotInfo>;
+    snapshotRestore(project: string, id: string): Promise<{
+        restored: readonly string[];
+        materialDrift?: boolean;
+    }>;
     private texFiles;
     citeAudit(project: string): Promise<CiteAudit>;
     /** 一键追加：从项目文献库取条目渲染 BibTeX 追加进 refs.bib（按 key 去重）。 */

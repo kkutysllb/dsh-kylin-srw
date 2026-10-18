@@ -699,8 +699,20 @@ export function srwPaperToolDef(service: SrwService): SrwToolDef {
         return { snapshots: await writer().snapshotList(project) }
       case 'snapshot.restore': {
         const id = typeof record['id'] === 'string' ? record['id'] : ''
-        const restored = await writer().snapshotRestore(project, id)
-        return { restored, hint: `已恢复 ${restored.length} 个文件——重新 compile 验证产物一致` }
+        const result = await writer().snapshotRestore(project, id)
+        return {
+          ...result,
+          hint: `已恢复 ${result.restored.length} 个文件${result.materialDrift === true ? '；⚠ materials manifest 与快照不一致（materialDrift）——素材证明链需重新 materials.verify' : ''}——重新 compile 验证产物一致`,
+        }
+      }
+      case 'snapshot.tag': {
+        const id = typeof record['id'] === 'string' ? record['id'] : ''
+        const label = typeof record['label'] === 'string' ? record['label'] : ''
+        const note = typeof record['note'] === 'string' ? record['note'] : undefined
+        return {
+          ...(await writer().snapshotTag(project, id, { label, ...(note !== undefined ? { note } : {}) })),
+          hint: '标签已写入快照 manifest——snapshot.list 可见；响应信/投稿包用它锚定版本',
+        }
       }
       case 'compliance': {
         const result = await writer().compliance(project)
@@ -722,7 +734,8 @@ export function srwPaperToolDef(service: SrwService): SrwToolDef {
       '（outline.prompt 拿分档提示词 → 自己拟大纲 → outline.save → 向用户确认 →',
       'outline.confirm 过 G1 门）、逐节起草正文（section.write，G1 未过会拒绝）、',
       '编译（compile，本机 TeX 引擎；错误带 file/line 可定位）、引用审计与一键补',
-      'BibTeX（cite.audit / refs.append）、快照回滚（snapshot.list / snapshot.restore）、',
+      'BibTeX（cite.audit / refs.append）、快照回滚与标签（snapshot.list / snapshot.tag /',
+      'snapshot.restore，restore 附 materialDrift 漂移提示）、',
       '合规检查（compliance，D1-D3 档位阈值 + 刊物要求，机读 checks）。',
       '纪律：正文内容必须由你自己起草（档位决定篇幅与完备度），工具只落盘；',
       '大纲未经用户确认不要调 outline.confirm。',
@@ -732,7 +745,7 @@ export function srwPaperToolDef(service: SrwService): SrwToolDef {
       properties: {
         action: {
           type: 'string',
-          enum: ['state', 'venue.list', 'venue.apply', 'scaffold', 'outline.get', 'outline.prompt', 'outline.save', 'outline.confirm', 'section.write', 'compile', 'cite.audit', 'refs.append', 'snapshot.list', 'snapshot.restore', 'compliance'],
+          enum: ['state', 'venue.list', 'venue.apply', 'scaffold', 'outline.get', 'outline.prompt', 'outline.save', 'outline.confirm', 'section.write', 'compile', 'cite.audit', 'refs.append', 'snapshot.list', 'snapshot.tag', 'snapshot.restore', 'compliance'],
           description: '要执行的动作',
         },
         project: { type: 'string', description: '项目 slug' },
@@ -744,7 +757,9 @@ export function srwPaperToolDef(service: SrwService): SrwToolDef {
         sectionId: { type: 'string', description: 'section.write 必填：大纲节 id（如 s1）' },
         tex: { type: 'string', description: 'section.write 必填：该节完整 LaTeX 正文' },
         keys: { type: 'array', items: { type: 'string' }, description: 'refs.append 必填：文献库条目 key' },
-        id: { type: 'string', description: 'snapshot.restore 必填：快照 id' },
+        id: { type: 'string', description: 'snapshot.restore/tag 必填：快照 id' },
+        label: { type: 'string', description: 'snapshot.tag 必填：标签名（≤80 字符，如 baseline / revision-r1）' },
+        note: { type: 'string', description: 'snapshot.tag 可选：备注（≤500 字符）' },
       },
       required: ['action'],
     },

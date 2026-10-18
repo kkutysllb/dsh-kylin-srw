@@ -515,6 +515,11 @@ export async function handleSrwRpc(
       }
       case 'paper.snapshot.list':
         return ok(await service.writer.snapshotList(reqString(record(payload), 'project')))
+      case 'paper.snapshot.tag': {
+        const body = record(payload)
+        const note = typeof body['note'] === 'string' ? body['note'] : undefined
+        return ok(await service.writer.snapshotTag(reqString(body, 'project'), reqString(body, 'id'), { label: reqString(body, 'label'), ...(note !== undefined ? { note } : {}) }))
+      }
       case 'paper.snapshot.restore': {
         const body = record(payload)
         return ok(await service.writer.snapshotRestore(reqString(body, 'project'), reqString(body, 'id')))

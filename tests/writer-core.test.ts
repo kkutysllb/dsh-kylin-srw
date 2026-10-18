@@ -11,7 +11,8 @@ import { compilePaper, fallbackError } from '../src/writer/compile.ts'
 import { renderScaffold, INPUT_BEGIN, INPUT_END, syncInputBlock } from '../src/writer/scaffold.ts'
 import { compileCommand } from '../src/writer/engine.ts'
 import { extractCiteKeys, auditCites } from '../src/writer/cite-audit.ts'
-import { createSnapshot, listSnapshots, restoreSnapshot } from '../src/writer/snapshot.ts'
+import { createHash } from 'node:crypto'
+import { createSnapshot, listSnapshots, restoreSnapshot, tagSnapshot } from '../src/writer/snapshot.ts'
 import { emptyOutline, parseOutline, serializeOutline, confirmOutline, assertConfirmed, outlinePrompt } from '../src/writer/outline.ts'
 import { getVenue } from '../src/venue/registry.ts'
 import { ServiceError } from '../src/service.ts'
@@ -227,9 +228,9 @@ test('snapshot：创建留档带哈希；回滚哈希一致恢复；篡改留档
     // 修改现场 → 回滚 → 内容回到快照态
     await writeFile(join(paper, 'sections', '01-introduction.tex'), '\\section{Changed}\n')
     await writeFile(join(paper, 'sections', '99-leftover.tex'), '\\section{Junk}\n')
-    const restored = await restoreSnapshot(paper, snap.id)
+    const result = await restoreSnapshot(paper, snap.id)
     assert.equal(await readFile(join(paper, 'sections', '01-introduction.tex'), 'utf8'), '\\section{Introduction}\n')
-    assert.ok(restored.includes('-sections/99-leftover.tex'), '陈旧节文件被清除并报告')
+    assert.ok(result.restored.includes('-sections/99-leftover.tex'), '陈旧节文件被清除并报告')
 
     // 篡改快照内容 → CORRUPT（不静默恢复）
     const badSnap = await createSnapshot(paper, { engine: 'tectonic' })
@@ -239,6 +240,73 @@ test('snapshot：创建留档带哈希；回滚哈希一致恢复；篡改留档
       (error: unknown) => error instanceof ServiceError && error.code === 'CORRUPT',
     )
     assert.equal((await listSnapshots(paper)).find(item => item.id === snap.id)?.engine, 'tectonic')
+  } finally {
+    await rm(paper, { recursive: true, force: true })
+  }
+})
+
+test('snapshot：materialsHash 留档 + 标签 + 回滚漂移检测 materialDrift（8.1）', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'srw-proj-'))
+  const paper = join(root, 'paper')
+  try {
+    await mkdir(join(paper, 'sections'), { recursive: true })
+    await mkdir(join(root, 'materials'), { recursive: true })
+    await writeFile(join(paper, 'main.tex'), '\\documentclass{article}\n\\begin{document}hi\\end{document}\n')
+    await writeFile(join(paper, 'sections', '01-introduction.tex'), '\\section{Introduction}\n')
+    await writeFile(join(root, 'materials', 'manifest.json'), '{"schemaVersion":1,"artifacts":[]}\n')
+
+    const snap = await createSnapshot(paper)
+    const manifest = JSON.parse(await readFile(join(paper, 'snapshots', snap.id, 'manifest.json'), 'utf8')) as { kind?: string; materialsHash?: string }
+    assert.equal(manifest.kind, 'compile', '默认 kind=compile')
+    assert.ok(manifest.materialsHash !== undefined, '项目级 materials manifest 哈希入档')
+
+    await tagSnapshot(paper, snap.id, { label: 'baseline', note: '首轮基线' })
+    const listed = (await listSnapshots(paper)).find(item => item.id === snap.id)
+    assert.equal(listed?.label, 'baseline', '标签入 manifest 并在 list 可见')
+    assert.equal(listed?.note, '首轮基线')
+    await assert.rejects(
+      () => tagSnapshot(paper, snap.id, { label: '   ' }),
+      (error: unknown) => error instanceof ServiceError && error.code === 'INVALID',
+    )
+    await assert.rejects(
+      () => tagSnapshot(paper, 'no-such', { label: 'x' }),
+      (error: unknown) => error instanceof ServiceError && error.code === 'NOT_FOUND',
+    )
+
+    const first = await restoreSnapshot(paper, snap.id)
+    assert.equal(first.materialDrift, false, 'materials 未变 → 不报漂移')
+
+    await writeFile(join(root, 'materials', 'manifest.json'), '{"schemaVersion":1,"artifacts":[{"tampered":true}]}\n')
+    const drifted = await restoreSnapshot(paper, snap.id)
+    assert.equal(drifted.materialDrift, true, 'materials 被改 → 报漂移（提示而非阻断）')
+
+    await rm(join(root, 'materials'), { recursive: true, force: true })
+    const lost = await restoreSnapshot(paper, snap.id)
+    assert.equal(lost.materialDrift, true, 'materials manifest 丢失也算漂移')
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('snapshot：旧格式 manifest（无新字段）list/restore 照常——向后兼容（8.1）', async () => {
+  const paper = await mkdtemp(join(tmpdir(), 'srw-oldsnap-'))
+  try {
+    const id = '2026-01-01T00-00-00-000Z'
+    await mkdir(join(paper, 'snapshots', id), { recursive: true })
+    const main = Buffer.from('\\documentclass{article}\n\\begin{document}old\\end{document}\n')
+    await writeFile(join(paper, 'main.tex'), main)
+    await writeFile(join(paper, 'snapshots', id, 'main.tex'), main)
+    await writeFile(join(paper, 'snapshots', id, 'manifest.json'), JSON.stringify({
+      schemaVersion: 1,
+      createdAt: '2026-01-01T00:00:00.000Z',
+      files: { 'main.tex': createHash('sha256').update(main).digest('hex') },
+    }))
+    const listed = await listSnapshots(paper)
+    assert.equal(listed.length, 1)
+    assert.equal(listed[0]?.label, undefined, '旧格式无标签字段')
+    const result = await restoreSnapshot(paper, id)
+    assert.ok(result.restored.includes('main.tex'))
+    assert.equal(result.materialDrift, undefined, '旧格式无 materialsHash → 不判漂移')
   } finally {
     await rm(paper, { recursive: true, force: true })
   }

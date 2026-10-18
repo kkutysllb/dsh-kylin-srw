@@ -16,7 +16,7 @@ import { probeEngines, type RunPort, type TeXEngine } from './engine.ts'
 import { renderScaffold, isSafeSectionFile, normalizeInputPath, sectionInputPaths, syncInputBlock, type ScaffoldPlan } from './scaffold.ts'
 import { compilePaper, type CompileOutcome } from './compile.ts'
 import { auditCites, type CiteAudit } from './cite-audit.ts'
-import { createSnapshot, listSnapshots, restoreSnapshot, type SnapshotInfo } from './snapshot.ts'
+import { createSnapshot, listSnapshots, restoreSnapshot, tagSnapshot, type SnapshotInfo } from './snapshot.ts'
 import { emptyOutline, parseOutline, serializeOutline, confirmOutline, assertConfirmed, outlinePrompt, type Outline, type OutlineSection } from './outline.ts'
 import { extractCitekeys, toBibtex } from '../literature/bibtex.ts'
 import { getVenue, listVenues } from '../venue/registry.ts'
@@ -416,7 +416,12 @@ export class WriterService {
     return await listSnapshots(this.paperDir(project))
   }
 
-  async snapshotRestore(project: string, id: string): Promise<readonly string[]> {
+  /** 快照打标签（8.1）：manifest 记 label/note，snapshot.list 可见。 */
+  async snapshotTag(project: string, id: string, tag: { readonly label: string; readonly note?: string }): Promise<SnapshotInfo> {
+    return await tagSnapshot(this.paperDir(project), id, tag)
+  }
+
+  async snapshotRestore(project: string, id: string): Promise<{ restored: readonly string[]; materialDrift?: boolean }> {
     return await restoreSnapshot(this.paperDir(project), id, {
       guard: async (rel: string) => {
         const abs = rel.startsWith('state/')
