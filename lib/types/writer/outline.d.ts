@@ -27,6 +27,7 @@ export interface Outline {
 export declare function emptyOutline(sections?: readonly {
     title: string;
     intent: string;
+    file?: string;
 }[]): Outline;
 /** 解析项目内 outline.json（坏数据 → INVALID；文件级 I/O 在服务层）。 */
 export declare function parseOutline(raw: string): Outline;

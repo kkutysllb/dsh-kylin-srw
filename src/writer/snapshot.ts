@@ -4,7 +4,7 @@
 
 import { createHash } from 'node:crypto'
 import { mkdir, readdir, readFile, rm, writeFile, copyFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { ServiceError } from '../service.ts'
 
 export interface SnapshotManifest {
@@ -36,6 +36,15 @@ async function collectFiles(paperDir: string): Promise<Record<string, Buffer>> {
   } catch { /* 无 sections 目录 → 只留 main */ }
   const pdf = await readFile(join(paperDir, 'build', 'main.pdf')).catch(() => undefined)
   if (pdf !== undefined) files['build/main.pdf'] = pdf
+  // 状态文件也进快照：只回滚 tex 而不回滚 outline/venue 会造成「正文与大纲不一致」。
+  // 仅当 paperDir 确实是项目下的 paper/（直接对任意临时目录做快照的单测不要误读 /tmp/.srw）。
+  if (basename(paperDir) === 'paper') {
+    const projectDir = dirname(paperDir)
+    for (const name of ['outline.json', 'venue.json'] as const) {
+      const state = await readFile(join(projectDir, '.srw', name)).catch(() => undefined)
+      if (state !== undefined) files[`state/${name}`] = state
+    }
+  }
   return files
 }
 
@@ -91,27 +100,54 @@ export async function listSnapshots(paperDir: string): Promise<readonly Snapshot
   return infos.sort((a, b) => b.id.localeCompare(a.id))
 }
 
-/** 回滚：逐文件哈希比对 manifest；覆盖当前 paper/。返回恢复的文件清单。 */
-export async function restoreSnapshot(paperDir: string, id: string): Promise<readonly string[]> {
+/** 快照允许回滚的路径白名单：manifest 是磁盘上的普通 JSON，可能被手改/注入，
+ * 只认这些形状，任何 ../、绝对路径、未知文件一律 FORBIDDEN（不是静默跳过）。 */
+export function isSnapshotPathAllowed(path: string): boolean {
+  if (path === 'main.tex' || path === 'refs.bib' || path === 'build/main.pdf') return true
+  if (path === 'state/outline.json' || path === 'state/venue.json') return true
+  return /^sections\/[A-Za-z0-9._-]+\.tex$/.test(path)
+}
+
+export interface RestoreSnapshotOptions {
+  /** 宿主 containment 护栏（服务层传入）；直接调用 snapshot 模块的测试可省。 */
+  readonly guard?: (rel: string) => Promise<void>
+}
+
+/** 回滚：逐文件哈希比对 manifest；覆盖当前 paper/（state/* 写回项目 .srw/）。
+ * 返回恢复的文件清单。 */
+export async function restoreSnapshot(paperDir: string, id: string, options: RestoreSnapshotOptions = {}): Promise<readonly string[]> {
+  if (!/^[A-Za-z0-9._-]+$/.test(id) || id === '.' || id === '..') {
+    throw new ServiceError('INVALID', `快照 id 非法：${JSON.stringify(id)}`)
+  }
   const snapshotDir = join(paperDir, 'snapshots', id)
   const raw = await readFile(join(snapshotDir, 'manifest.json'), 'utf8').catch(() => {
     throw new ServiceError('NOT_FOUND', `快照不存在：${id}`)
   })
   const manifest = JSON.parse(raw) as SnapshotManifest
+  const projectDir = dirname(paperDir)
   const restored: string[] = []
   for (const [path, expectedHash] of Object.entries(manifest.files)) {
+    if (!isSnapshotPathAllowed(path)) {
+      throw new ServiceError('FORBIDDEN', `快照路径越界/不在白名单：${id}/${path}`)
+    }
+    await options.guard?.(path)
     const data = await readFile(join(snapshotDir, path)).catch(() => {
       throw new ServiceError('CORRUPT', `快照文件缺失：${id}/${path}`)
     })
     if (sha256(data) !== expectedHash) {
       throw new ServiceError('CORRUPT', `快照文件哈希不一致：${id}/${path}（留档被改动）`)
     }
-    const target = join(paperDir, path)
-    if (path.startsWith('build/')) {
+    if (path.startsWith('state/')) {
+      const target = join(projectDir, '.srw', path.slice('state/'.length))
+      await mkdir(dirname(target), { recursive: true })
+      await writeFile(target, data)
+    } else if (path.startsWith('build/')) {
+      const target = join(paperDir, path)
       await mkdir(join(paperDir, 'build'), { recursive: true })
       await copyFile(join(snapshotDir, path), target)
     } else {
-      await mkdir(target.slice(0, target.lastIndexOf('/')), { recursive: true })
+      const target = join(paperDir, path)
+      await mkdir(dirname(target), { recursive: true })
       await writeFile(target, data)
     }
     restored.push(path)
@@ -126,5 +162,6 @@ export async function restoreSnapshot(paperDir: string, id: string): Promise<rea
         restored.push(`-${rel}`)
       }
     }
-  } catch { /* 无 sections 目录 */ }  return restored
+  } catch { /* 无 sections 目录 */ }
+  return restored
 }

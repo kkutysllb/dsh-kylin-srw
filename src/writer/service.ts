@@ -7,13 +7,13 @@
  * LLM 生成（大纲内容/正文章节）**不经本服务**——走 agent 车道：agent 就是
  * 模型，工具只提供 IO + 门（0206 执行约定）。 */
 
-import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises'
+import { basename, join } from 'node:path'
 import { SLUG_RE } from '../core/schema.ts'
 import { assertInsideRoot, type SrwFsLike } from '../host.ts'
 import { ServiceError } from '../service.ts'
 import { probeEngines, type RunPort, type TeXEngine } from './engine.ts'
-import { renderScaffold, type ScaffoldPlan } from './scaffold.ts'
+import { renderScaffold, isSafeSectionFile, normalizeInputPath, sectionInputPaths, syncInputBlock, type ScaffoldPlan } from './scaffold.ts'
 import { compilePaper, type CompileOutcome } from './compile.ts'
 import { auditCites, type CiteAudit } from './cite-audit.ts'
 import { createSnapshot, listSnapshots, restoreSnapshot, type SnapshotInfo } from './snapshot.ts'
@@ -35,7 +35,7 @@ export interface VenueInstance {
 export interface PaperState {
   readonly project: string
   readonly venue: VenueInstance | undefined
-  readonly outline?: { readonly status: string; readonly revision: number; readonly sections: number } | undefined
+  readonly outline?: { readonly status: string; readonly revision: number; readonly sections: number; readonly files: number } | undefined
   readonly engine: { readonly engine?: TeXEngine | undefined; readonly probes: readonly { readonly engine: string; readonly available: boolean }[] }
   readonly files: { readonly mainTex: boolean; readonly refsBib: boolean; readonly sections: readonly string[]; readonly buildPdf: boolean }
   readonly snapshots: readonly SnapshotInfo[]
@@ -44,8 +44,9 @@ export interface PaperState {
 export interface WriterDeps {
   readonly fs: SrwFsLike | undefined
   readonly rootDir: () => string | undefined
-  /** 进程执行端口（默认真实 execFile；测试注入假引擎）。 */
-  readonly run?: RunPort
+  /** 进程执行端口：生产装配 nodeRun，测试注入假引擎。**必填**——缺失必须在
+   * 构造期报 NO_PROVIDER，而不是被 probeEngines 的 catch 吞成「引擎不可用」。 */
+  readonly run: RunPort
   /** 文献库取条目（refsAppend 生成 BibTeX 用）。 */
   readonly libraryEntry?: (project: string, key: string) => Promise<unknown>
 }
@@ -53,7 +54,12 @@ export interface WriterDeps {
 export class WriterService {
   private engineCache: Awaited<ReturnType<typeof probeEngines>> | undefined
 
-  constructor(private readonly deps: WriterDeps) {}
+  constructor(private readonly deps: WriterDeps) {
+    // 运行时兜底（JS 调用方/旧装配）：进程端口缺失是装配错误，不是引擎缺失。
+    if ((deps as { run?: RunPort }).run === undefined) {
+      throw new ServiceError('NO_PROVIDER', 'WriterService 进程执行端口未装配（run 缺失）——检查 SrwService.writer 装配')
+    }
+  }
 
   private requireRoot(): string {
     const root = this.deps.rootDir()
@@ -95,6 +101,99 @@ export class WriterService {
 
   private outlinePath(project: string): string {
     return join(this.projectDir(project), '.srw', 'outline.json')
+  }
+
+  private mainTexPath(project: string): string {
+    return join(this.paperDir(project), 'main.tex')
+  }
+
+  /** 大纲每节都必须绑定合法章节文件（G1 门与编译输入门的共同前提）。 */
+  private assertOutlineBound(outline: Outline): void {
+    for (const section of outline.sections) {
+      if (section.file === undefined) {
+        throw new ServiceError('INVALID', `大纲节「${section.title}」未绑定文件：先 outline.save 或重新 scaffold`)
+      }
+      if (!isSafeSectionFile(section.file)) {
+        throw new ServiceError('INVALID', `大纲节「${section.title}」的文件路径非法：${section.file}`)
+      }
+    }
+  }
+
+  /** 把 outline 的章节顺序写回 main.tex 的 \input 清单；main.tex 不存在时跳过。 */
+  private async syncInputs(project: string, outline: Outline): Promise<void> {
+    const main = await this.readText(this.mainTexPath(project))
+    if (main === undefined) return
+    this.assertOutlineBound(outline)
+    const sections = outline.sections.map(section => ({ title: section.title, file: section.file as string }))
+    const next = syncInputBlock(main, sections)
+    if (next !== main) await this.writeText(this.mainTexPath(project), next)
+  }
+
+  /** 旧项目迁移：scaffold 早期版本的大纲节没有 file，直接确认/编译会 INVALID。
+   * 这里按标题/index 绑定骨架命名（与 scaffold 的 slugFile 一致）并补占位，
+   * 已绑定的节不动；迁移结果写回 outline.json，避免「可确认但不可写」的死路。 */
+  private async ensureOutlineFiles(project: string, outline: Outline): Promise<Outline> {
+    if (outline.sections.every(section => section.file !== undefined && isSafeSectionFile(section.file))) {
+      return outline
+    }
+    const used = new Set<string>()
+    const nextSections: OutlineSection[] = []
+    for (const [index, section] of outline.sections.entries()) {
+      let file = section.file
+      if (file === undefined || !isSafeSectionFile(file) || used.has(file)) {
+        file = `sections/${slugFile(section.title, index)}.tex`
+        let suffix = 2
+        while (used.has(file)) {
+          file = `sections/${slugFile(section.title, index)}-${suffix}.tex`
+          suffix += 1
+        }
+      }
+      used.add(file)
+      nextSections.push({ ...section, file })
+    }
+    const next: Outline = { ...outline, sections: nextSections }
+    await this.writeText(this.outlinePath(project), serializeOutline(next))
+    for (const section of nextSections) {
+      const file = section.file as string
+      const path = join(this.paperDir(project), file)
+      if (await this.readText(path) === undefined) {
+        await this.writeText(path, `\\section{${section.title}}\n% 从旧大纲迁移：若已有正文请替换本节\n\n`)
+      }
+    }
+    return next
+  }
+
+  /** 大纲改名/删节后，把不再被引用的旧节文件移入 sections/_orphaned/，
+   * 既保留写作现场，又不让孤儿文件参与 compliance/引用审计。 */
+  private async moveOrphanedSections(project: string, previous: Outline | undefined, next: Outline): Promise<void> {
+    const keep = new Set(next.sections.map(section => section.file).filter((file): file is string => file !== undefined))
+    const seen = new Set<string>()
+    const orphanDir = join(this.paperDir(project), 'sections', '_orphaned')
+    for (const section of previous?.sections ?? []) {
+      const file = section.file
+      if (file === undefined || keep.has(file) || seen.has(file) || !isSafeSectionFile(file)) continue
+      seen.add(file)
+      const source = join(this.paperDir(project), file)
+      await this.guard(source)
+      try {
+        await mkdir(orphanDir, { recursive: true })
+        await rename(source, join(orphanDir, basename(file)))
+      } catch { /* 文件不存在：没什么可移的 */ }
+    }
+  }
+
+  /** 编译前的输入一致性门：outline.file 序列必须与 main.tex 的 \input 序列逐项相等。
+   * 这不是提示词纪律，而是编译动作的硬前提（静默丢节曾真实发生）。 */
+  private async assertInputsMatchOutline(project: string, outline: Outline): Promise<void> {
+    this.assertOutlineBound(outline)
+    const main = await this.readText(this.mainTexPath(project))
+    if (main === undefined) return
+    const expected = outline.sections.map(section => normalizeInputPath(section.file as string))
+    const actual = sectionInputPaths(main)
+    const same = expected.length === actual.length && expected.every((path, index) => path === actual[index])
+    if (!same) {
+      throw new ServiceError('GATE', `编译输入与大纲不一致：大纲 [${expected.join(', ')}]，main.tex [${actual.join(', ')}]`)
+    }
   }
 
   /* ── venue ── */
@@ -158,8 +257,13 @@ export class WriterService {
       await this.writeText(join(this.paperDir(project), path), content)
       written.push(path)
     }
-    // 骨架同时落大纲草稿（节 = venue.sectionOrder，一级真相源就位）
-    const outline = emptyOutline(venue.sectionOrder.map(title => ({ title, intent: `${title}（骨架占位——生成大纲后替换意图）` })))
+    // 骨架同时落大纲草稿（节 = venue.sectionOrder，一级真相源就位）；
+    // 每节直接绑定骨架已写出的 sections/*.tex，G1 确认后 section.write 即可用。
+    const outline = emptyOutline(venue.sectionOrder.map((title, index) => ({
+      title,
+      intent: `${title}（骨架占位——生成大纲后替换意图）`,
+      ...(plan.sections[index] !== undefined ? { file: plan.sections[index] } : {}),
+    })))
     await this.writeText(this.outlinePath(project), serializeOutline(outline))
     return { ...plan, written }
   }
@@ -205,14 +309,21 @@ export class WriterService {
         await this.writeText(path, `\\section{${section.title}}\n% intent: ${section.intent}\n\n`)
       }
     }
+    // 大纲是编译输入的单一真相源：保存即重写 main.tex，旧节文件移入 _orphaned。
+    await this.syncInputs(project, next)
+    await this.moveOrphanedSections(project, previous, next)
     return next
   }
 
   async outlineConfirm(project: string): Promise<Outline> {
-    const outline = await this.outlineGet(project)
-    if (outline === undefined) throw new ServiceError('NOT_FOUND', '大纲不存在（先 scaffold 或让 agent 起草后 outline.save）')
+    const raw = await this.outlineGet(project)
+    if (raw === undefined) throw new ServiceError('NOT_FOUND', '大纲不存在（先 scaffold 或让 agent 起草后 outline.save）')
+    // 旧项目自动迁移：scaffold 早期版本不绑 file；不迁移会「可确认但不可写」。
+    const outline = await this.ensureOutlineFiles(project, raw)
+    this.assertOutlineBound(outline)
     const confirmed = confirmOutline(outline)
     await this.writeText(this.outlinePath(project), serializeOutline(confirmed))
+    await this.syncInputs(project, confirmed)
     return confirmed
   }
 
@@ -238,9 +349,10 @@ export class WriterService {
 
   /** 正文节写入（G1 门硬编码在此）：大纲确认后 agent 才能把起草的节落盘。 */
   async sectionWrite(project: string, sectionId: string, tex: string): Promise<{ file: string; bytes: number }> {
-    const outline = await this.outlineGet(project)
-    if (outline === undefined) throw new ServiceError('NOT_FOUND', '大纲不存在')
-    assertConfirmed(outline)
+    const raw = await this.outlineGet(project)
+    if (raw === undefined) throw new ServiceError('NOT_FOUND', '大纲不存在')
+    assertConfirmed(raw)
+    const outline = await this.ensureOutlineFiles(project, raw)
     const section = outline.sections.find(item => item.id === sectionId)
     if (section === undefined) throw new ServiceError('NOT_FOUND', `大纲没有节 ${sectionId}`)
     if (section.file === undefined) throw new ServiceError('INVALID', `节 ${sectionId} 未绑定文件（重新 outline.save）`)
@@ -253,21 +365,38 @@ export class WriterService {
 
   private async engineOf(): Promise<Awaited<ReturnType<typeof probeEngines>>> {
     if (this.engineCache === undefined) {
-      this.engineCache = await probeEngines(this.deps.run ?? throwNoRunner)
+      this.engineCache = await probeEngines(this.deps.run)
     }
     return this.engineCache
   }
 
   async compile(project: string): Promise<CompileOutcome & { readonly snapshot?: { readonly id: string; readonly files: number }; readonly pdfWritten: boolean }> {
-    const probed = await this.engineOf()
-    if (probed.engine === undefined) {
-      throw new ServiceError('ENGINE_MISSING', '本机没有可用 TeX 引擎（tectonic/latexmk/xelatex/pdflatex 全缺）——brew install tectonic 后重试')
-    }
     const dir = this.paperDir(project)
     if (await this.readText(join(dir, 'main.tex')) === undefined) {
       throw new ServiceError('NOT_FOUND', 'paper/main.tex 不存在——先骨架生成')
     }
-    const outcome = await compilePaper({ engine: probed.engine, entry: 'main.tex', run: this.deps.run ?? throwNoRunner, cwd: dir })
+    // 大纲是编译输入的单一真相源：先重写 \input，再逐项核对；不一致就拒绝编译，
+    // 绝不「编译成功但静默丢节/编进已删节」。
+    const rawOutline = await this.outlineGet(project)
+    if (rawOutline !== undefined) {
+      const outline = await this.ensureOutlineFiles(project, rawOutline)
+      await this.syncInputs(project, outline)
+      await this.assertInputsMatchOutline(project, outline)
+    }
+    const probed = await this.engineOf()
+    if (probed.engine === undefined) {
+      throw new ServiceError('ENGINE_MISSING', '本机没有可用 TeX 引擎（tectonic/latexmk/xelatex/pdflatex 全缺）——brew install tectonic 后重试')
+    }
+    const instance = await this.venueOf(project)
+    const venue = instance === undefined ? undefined : getVenue(instance.venueId)
+    await mkdir(join(dir, 'build'), { recursive: true })
+    const outcome = await compilePaper({
+      engine: probed.engine,
+      entry: 'main.tex',
+      run: this.deps.run,
+      cwd: dir,
+      ...(venue !== undefined ? { bibTool: venue.bibTool } : {}),
+    })
     await this.writeText(join(dir, 'build', 'main.log'), outcome.log)
     const pdfWritten = await this.existsSafe(join(dir, 'build', 'main.pdf'))
     let snapshot: { id: string; files: number } | undefined
@@ -288,7 +417,14 @@ export class WriterService {
   }
 
   async snapshotRestore(project: string, id: string): Promise<readonly string[]> {
-    return await restoreSnapshot(this.paperDir(project), id)
+    return await restoreSnapshot(this.paperDir(project), id, {
+      guard: async (rel: string) => {
+        const abs = rel.startsWith('state/')
+          ? join(this.projectDir(project), '.srw', rel.slice('state/'.length))
+          : join(this.paperDir(project), rel)
+        await this.guard(abs)
+      },
+    })
   }
 
   /* ── 引用审计 ── */
@@ -298,17 +434,23 @@ export class WriterService {
     const files: { name: string; text: string }[] = []
     const main = await this.readText(join(dir, 'main.tex'))
     if (main !== undefined) files.push({ name: 'main.tex', text: main })
-    const sectionsDir = join(dir, 'sections')
-    await this.guard(sectionsDir)
-    for (const name of await readdir(sectionsDir).catch(() => [])) {
-      if (!name.endsWith('.tex')) continue
-      const text = await this.readText(join(sectionsDir, name))
-      if (text !== undefined) files.push({ name: `sections/${name}`, text })
+    // 只用「已进入编译输入」的节做引用审计/合规事实：孤儿节与 _orphaned 不算。
+    const outline = await this.outlineGet(project)
+    const names = outline !== undefined
+      ? outline.sections.map(section => section.file).filter((file): file is string => file !== undefined)
+      : await readdir(join(dir, 'sections')).catch(() => []).then(entries => entries.filter(name => name.endsWith('.tex')).map(name => `sections/${name}`))
+    for (const name of new Set(names)) {
+      if (!isSafeSectionFile(name)) continue
+      const text = await this.readText(join(dir, name))
+      if (text !== undefined) files.push({ name, text })
     }
     return files
   }
 
   async citeAudit(project: string): Promise<CiteAudit> {
+    // 旧大纲先迁移绑定，否则审计只读 main.tex、漏掉全部节引用（低估）。
+    const rawOutline = await this.outlineGet(project)
+    if (rawOutline !== undefined) await this.ensureOutlineFiles(project, rawOutline)
     const texFiles = await this.texFiles(project)
     if (texFiles.length === 0) throw new ServiceError('NOT_FOUND', 'paper/ 里没有 .tex（先骨架生成）')
     const bib = await this.readText(join(this.paperDir(project), 'refs.bib')) ?? ''
@@ -349,6 +491,8 @@ export class WriterService {
   /* ── 合规（R5 机读出口） ── */
 
   async compliance(project: string): Promise<{ readonly venue: VenueInstance; readonly checks: readonly ComplianceCheck[] }> {
+    const rawOutline = await this.outlineGet(project)
+    if (rawOutline !== undefined) await this.ensureOutlineFiles(project, rawOutline)
     const instance = await this.venueOf(project)
     if (instance === undefined) throw new ServiceError('INVALID', '先应用刊物再做合规检查')
     const venue = getVenue(instance.venueId)
@@ -386,7 +530,7 @@ export class WriterService {
       project,
       venue: await this.venueOf(project),
       ...(outline !== undefined
-        ? { outline: { status: outline.status, revision: outline.revision, sections: outline.sections.length } }
+        ? { outline: { status: outline.status, revision: outline.revision, sections: outline.sections.length, files: outline.sections.filter(section => section.file !== undefined).length } }
         : {}),
       engine: await this.engineOf(),
       files: {
@@ -405,9 +549,6 @@ export class WriterService {
   }
 }
 
-function throwNoRunner(): never {
-  throw new ServiceError('NO_PROVIDER', '进程执行端口未装配')
-}
 
 function slugFile(title: string, index: number): string {
   const ascii = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '')

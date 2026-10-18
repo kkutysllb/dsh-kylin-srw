@@ -1,9 +1,11 @@
 /** RateGate（0102 §12 / 0203 Task 2.1）：按域的礼貌限速闸。
  *
- * - 令牌桶语义：同域请求间隔 ≥ minIntervalMs（含 ±20% 抖动，避免节拍共振）；
- *   跨域互不影响。
+ * - 令牌桶语义：同域请求间隔 ≥ minIntervalMs（含 +0–20% 正抖动，避免节拍
+ *   共振；抖动不低于官方下限）；跨域互不影响。
  * - 账本持久化 `<root>/.srw/rate-ledger.json`：跨进程唯一性由 withFileLock
- *   保证（读改写全程持锁）；本进程内另有内存串行链，省去同进程反复抢锁。
+ *   保证（读改写全程持锁）。**每次 mutate 都在锁内重新读盘**，不跨调用缓存
+ *   账本——因此外部实例的预约立即可见，换根（ledgerPath getter 返回新路径）
+ *   也从新账本开始。
  * - 429/503 退避：`reportFailure` 指数退避（2^n × 1s，n 为连续失败数），
  *   `Retry-After` 取大者；连续 5 次熔断 10 分钟（circuitUntil），
  *   熔断期 acquire 直接抛 `RATE_CIRCUIT_OPEN`。成功请求清零计数。
@@ -23,14 +25,15 @@ export declare class RateGate {
     private readonly ledgerPath;
     private readonly intervals;
     private readonly sleepFn;
-    private cache;
     constructor(options: RateGateOptions);
     private currentLedgerPath;
     private minInterval;
+    /** 从 path 读账本（**不缓存**）：缺文件/坏文件返回空账本。 */
     private loadLedger;
     private saveLedger;
     /** 账本读改写（跨进程持锁——O_EXCL 文件锁对同进程并发同样互斥）。
-     * 回调内完成全部判定与更新。 */
+     * 锁内**每次重新读盘**，外部实例/变更根后的账本立即生效；回调内完成全部
+     * 判定与更新。路径在进锁前取一次，避免 getter 中途换根造成读到 A 写到 B。 */
     private mutate;
     /** 取一个放行槽：同域距上次放行不足 minInterval（含抖动）时等待。
      * 悲观预约——lastRequestAt 在持锁时即写为目标放行时刻，后来者（含

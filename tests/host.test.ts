@@ -44,7 +44,9 @@ test('collectCaps：存在服务 true、缺席服务 false、路径探测不抛�
 test('hostHome：QILIN_HOME 优先，其次 DSH_HOME；都无则 unknown 且不猜 home', () => {
   assert.deepEqual(hostHome(fakeEnv({ QILIN_HOME: '/q', DSH_HOME: '/d' })),
     { channel: 'qilin', home: '/q' })
-  assert.deepEqual(hostHome(fakeEnv({ DSH_HOME: '/d' })),
+  // 注意：本用例在麒麟进程内跑时真实 env 带 QILIN_HOME，必须显式清空，
+  // 否则用例断言的是宿主环境而不是被测函数（2026-10-09 实测踩中）。
+  assert.deepEqual(hostHome(fakeEnv({ QILIN_HOME: undefined, DSH_HOME: '/d' })),
     { channel: 'dsh', home: '/d' })
   // DSH 桌面端实测形态（两个 env 都不设）：unknown 且 home 空（不硬编 ~/.qilin 误导）
   assert.deepEqual(hostHome(fakeEnv({ QILIN_HOME: undefined, DSH_HOME: undefined })),

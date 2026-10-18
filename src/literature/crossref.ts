@@ -2,11 +2,15 @@
  * `politeMailto`）+ DOI 解析（404 → UNRESOLVED）。归一化 `message` 内层。 */
 
 import { ServiceError } from '../service.ts'
+import { withDeadline } from '../net/deadline.ts'
 import { gatedFetchJson } from './http.ts'
 import type { RateGate } from './rate-gate.ts'
 import type { LitCandidate } from './types.ts'
 
 export const CROSSREF_API = 'https://api.crossref.org/works'
+/** P0-6：DOI 校验单跳 deadline（无 UA 的裸 fetch 既慢又易被礼貌池忽略）。 */
+const DOI_RESOLVE_DEADLINE_MS = 10_000
+const USER_AGENT = 'dsh-kylin-srw/0.0.1 (research workbench plugin)'
 
 function familyName(author: unknown): string | undefined {
   if (typeof author !== 'object' || author === null) return undefined
@@ -109,7 +113,13 @@ export async function resolveDoi(deps: CrossrefSearchDeps, doi: string): Promise
   const url = resolveDoiUrl(doi, deps.mailto)
   const domain = url.hostname
   await deps.gate.acquire(domain)
-  const response = await fetch(url, { redirect: 'manual' }).catch((error: unknown) => {
+  const response = await withDeadline(DOI_RESOLVE_DEADLINE_MS, async signal =>
+    await fetch(url, {
+      redirect: 'manual',
+      signal,
+      headers: { 'user-agent': USER_AGENT },
+    })).catch((error: unknown) => {
+    if (error instanceof ServiceError) throw error
     throw new ServiceError('UPSTREAM', `DOI 解析请求失败（${error instanceof Error ? error.message : String(error)}）`)
   })
   if (response.status === 404) {

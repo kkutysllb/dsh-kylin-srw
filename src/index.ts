@@ -15,7 +15,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { registerSrwRpc } from './rpc.ts'
 import { SrwService, type SrwConfig } from './service.ts'
-import { approvalDecision, callerFrom, srwProjectToolDef, srwLiteratureToolDef , srwWatchToolDef, srwReadToolDef, srwPaperToolDef } from './tools.ts'
+import { approvalDecision, callerFrom, srwProjectToolDef, srwLiteratureToolDef , srwWatchToolDef, srwReadToolDef, srwPaperToolDef, srwPatentToolDef, srwMaterialsToolDef, srwExperimentToolDef } from './tools.ts'
 import { registerBundledSkills } from './skills.ts'
 
 export const name = 'dsh-kylin-srw'
@@ -47,7 +47,7 @@ export interface Config {
 }
 
 /** 能力通告（一段有界文本，只说工具表与描述说不出的工作流约束）。 */
-const ANNOUNCEMENT = `本机已安装 dsh-kylin-srw 插件（科研工作台）：在科研总根下以「目录即真相源」的方式管理研究项目（slug 目录 + project.json + 文献/论文/实验骨架）。工具 srw_project 提供项目 list/create/open/remove（create/remove 需人工审批；总根未设置时先让用户在 Web 侧边栏「科研工作台」面板选择）。技能 research-idea 是选题工作流：用户讨论研究想法时按其选题卡骨架推进，成形后可建议登记为项目。工具 srw_literature 提供文献 search/import/pdf/bibtex（arXiv/OpenAlex/Crossref 三源，自动去重与撤稿标红；import/pdf 需人工审批）。工具 srw_watch 管理文献订阅：按检索词定期自动入库（list/create/remove/pause/resume/run；create/remove 需人工审批，run 幂等豁免；时钟注册在宿主「自动化任务」页，用户可改可删）。工具 srw_read 是精读执行面：把文献库 PDF 抽块、逐块翻译、生成导读与精读备注、按日期归档译注版 PDF（每批 ≤40 块逐批汇报）。工具 srw_paper 是论文线执行面：按刊物模板生成骨架、大纲起草与 G1 确认门（未确认不得写正文）、逐节起草、本机编译（错误带行号）、引用审计与一键补 BibTeX、快照回滚、D1-D3 档位合规检查。`
+const ANNOUNCEMENT = `本机已安装 dsh-kylin-srw 插件（科研工作台）：在科研总根下以「目录即真相源」的方式管理研究项目（slug 目录 + project.json + 文献/论文/实验骨架）。工具 srw_project 提供项目 list/create/open/remove（create/remove 需人工审批；总根未设置时先让用户在 Web 侧边栏「科研工作台」面板选择）。技能 research-idea 是选题工作流：用户讨论研究想法时按其选题卡骨架推进，成形后可建议登记为项目。工具 srw_literature 提供文献 search/import/pdf/bibtex（arXiv/OpenAlex/Crossref 三源，自动去重与撤稿标红；import/pdf 需人工审批），并支持检索计划 plan.save/run/list/replay（快照 + 离线重放）、fulltext（Unpaywall OA 全文 + 域确认 + 证据）、verify/citeGate/migrate（DOI 校验、撤稿引用门、身份迁移）。工具 srw_watch 管理文献订阅：按检索词定期自动入库（list/create/remove/pause/resume/run；create/remove 需人工审批，run 幂等豁免；时钟注册在宿主「自动化任务」页，用户可改可删）。工具 srw_read 是精读执行面：把文献库 PDF 抽块、逐块翻译、生成导读与精读备注、按日期归档译注版 PDF（每批 ≤40 块逐批汇报）。工具 srw_paper 是论文线执行面：按刊物模板生成骨架、大纲起草与 G1 确认门（未确认不得写正文）、逐节起草、本机编译（错误带行号）、引用审计与一键补 BibTeX、快照回滚、D1-D3 档位合规检查。工具 srw_patent（专利交底/公开时序门，投稿前必查）：登记专利档案、起草技术交底书、盘点公开事件；任何投稿/预印本/会议报告/学位论文/开源之前先跑 publication.check（先申请、后公开；结果不构成法律意见）。工具 srw_materials（素材生成/证明链/插入正文，数字必须可回指）：metrics.import 导入实验数据后，generate 按 spec 确定性渲染表/图/伪代码/公式/tikz，verify 复算（mismatch 阻断），insert 过溯源门写进正文（需审批），numbers 生成 \\srw<Name> 数字宏并审计裸数字；无 metrics 不生成、示意素材默认拒绝。工具 srw_experiment（M7 实验与算力 MVP，单主机）：hosts 盘点 GPU 主机（可达性+环境快照，输出只含 hostRef+label，绝不出现地址/用户名/端口）、submit 提交实验（需审批：spec 门 confirm + D 档缺口 ack + GPU 选卡 + setsid 脱离会话）、status/logs/collect 轮询 7 态/偏移续读日志/回传指标与产物（sha256 对账）、cancel 取消（需审批，进程组 TERM→KILL）、claims.check 论文数字逐点对账（verified/mismatch/unverifiable，mismatch 阻断引用）、gaps.list 补数据缺口与排期（P0/P1 清零才算补完）、dataset.register 数据集注册；pid/exit/done 全缺且日志无增长判 unknown 绝不假成功，日志超上限显式失败不静默截断。`
 
 /** Mount the SRW host service, its RPC channel, the agent tool, and skills. */
 export async function apply(ctx: Context, rawConfig: Config): Promise<void> {
@@ -107,7 +107,7 @@ export async function apply(ctx: Context, rawConfig: Config): Promise<void> {
       if (agentTools.has(agentId)) return
       const agentCtx = scoped.ctx
       const registered = agentCtx.effect(() => {
-        const removers = [srwProjectToolDef(service), srwLiteratureToolDef(service), srwWatchToolDef(service), srwReadToolDef(service), srwPaperToolDef(service)].map(def => agentCtx.tools?.register(def))
+        const removers = [srwProjectToolDef(service), srwLiteratureToolDef(service), srwWatchToolDef(service), srwReadToolDef(service), srwPaperToolDef(service), srwPatentToolDef(service), srwMaterialsToolDef(service), srwExperimentToolDef(service)].map(def => agentCtx.tools?.register(def))
         return () => {
           for (const remove of [...removers].reverse()) {
             if (typeof remove === 'function') void (remove as () => void)()

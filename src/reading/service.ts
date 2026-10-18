@@ -24,6 +24,9 @@ import { verifyPaper, type VerifyReport } from './verify.ts'
 
 const PAPER_KEY_RE = /^[a-z0-9][a-z0-9-]{0,63}$/
 
+/** P0-7：单批翻译块数上限（服务端硬 clamp；agent 提示词的 ≤40 不再是唯一闸）。 */
+export const MAX_TRANSLATE_BLOCKS = 40
+
 export interface ReadingDeps {
   readonly fs: SrwFsLike | undefined
   readonly rootDir: () => string | undefined
@@ -257,8 +260,18 @@ export class ReadingService {
   }
 
   /** 翻译：缓存命中跳过；miss 走 llm（缺席报 INVALID）→ 术语强校验 →
-   * 写缓存/更新 map 元数据 → 重渲染 paper.md → verify。 */
+   * 写缓存/更新 map 元数据 → 重渲染 paper.md → verify。
+   *
+   * P0-7 批量续跑四点：
+   * 1. 任一块失败时**先把本批已成功译文写进缓存**再抛（原先整批丢）；
+   * 2. finish.reason='length' 在 translator 层已按失败处理并报 TRUNCATED；
+   * 3. 服务端 clamp：显式 keys >40 → INVALID；未给 keys 时单批最多取 40 块；
+   * 4. 重试/续跑命中缓存则零 LLM 调用（pending 只含 miss 块）。 */
   async translate(project: string, paperKey: string, options: { keys?: readonly string[]; force?: boolean } = {}): Promise<ReadingStatus> {
+    if (options.keys !== undefined && options.keys.length > MAX_TRANSLATE_BLOCKS) {
+      throw new ServiceError('INVALID',
+        `单批最多 ${MAX_TRANSLATE_BLOCKS} 块（收到 ${options.keys.length}）；按页号分批后重试`)
+    }
     const map = await this.loadMap(project, paperKey)
     if (map === undefined) throw new ServiceError('NOT_FOUND', `未抽取：先对 ${paperKey} 跑 reading.extract`)
     const llm = this.deps.llm()
@@ -276,20 +289,31 @@ export class ReadingService {
       const key = this.keyOf(block, model, glossary)
       return lookup(cache, key) === undefined
     })
-    if (pending.length > 0) {
+    // 未显式指定 keys（agent 说「整篇翻译」）时由服务端兜底 clamp，避免一次
+    // 打几十上百块把上游拖到超时；剩余块由下一批继续。
+    const batch = options.keys !== undefined && options.keys.length > 0
+      ? pending
+      : pending.slice(0, MAX_TRANSLATE_BLOCKS)
+    if (batch.length > 0) {
       const report = await translateBlocks({
         llm, provider, model,
-      }, pending.map(block => ({ id: block.id, text: sources[block.id] ?? '' })), {
+      }, batch.map(block => ({ id: block.id, text: sources[block.id] ?? '' })), {
         glossary: glossary.entries,
       })
-      if (report.failures.length > 0) {
-        throw new ServiceError('UPSTREAM', `翻译失败 ${report.failures.length} 块（首错：${report.failures[0]?.error ?? ''}）`)
-      }
+      // 先落已成功译文（P0-7：部分失败也保住成果）——失败块不在 results 里，
+      // 下次重跑只会补失败/未译块，已成功块零 LLM 调用。
       for (const result of report.results) {
         const check = enforceGlossary(result.text, glossary)
         cache = store(cache, this.keyOfById(result.srcHash, model, glossary), { text: check.repaired, model, at: result.at })
       }
-      await this.writeJson(this.cachePath(project, paperKey), cache)
+      if (report.results.length > 0) await this.writeJson(this.cachePath(project, paperKey), cache)
+      if (report.failures.length > 0) {
+        const truncated = report.failures.some(failure => failure.error.includes('truncated'))
+        throw new ServiceError(truncated ? 'TRUNCATED' : 'UPSTREAM',
+          truncated
+            ? `翻译被截断（finish reason=length）${report.failures.length} 块；已成功译文已缓存，重跑只补失败块`
+            : `翻译失败 ${report.failures.length} 块（首错：${report.failures[0]?.error ?? ''}）；已成功译文已缓存，重跑只补失败块`)
+      }
     }
     await this.rewriteMapTranslations(project, paperKey, map, cache, model, glossary)
     await this.renderPaper(project, paperKey)

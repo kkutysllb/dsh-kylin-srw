@@ -58,6 +58,9 @@ async function storedEntries(root: string, slug: string): Promise<Record<string,
   identity: { year: number; arxivId?: string }
   authors: readonly string[]
   pdfUrl?: string
+  status?: string
+  openalexId?: string
+  retracted?: boolean
 }>> {
   const raw = await readFile(join(root, slug, 'literature', 'library.json'), 'utf8')
   return (JSON.parse(raw) as { entries: Record<string, never> })['entries'] as never
@@ -256,6 +259,42 @@ test('容形：agent 实测变体全收编——字符串年、对象作者、�
     source: 'arxiv', identity: { arxivId: '2401.00001', title: 'T', year: 'recent' },
   })
   assert.equal(c4.identity.year, 0)
+})
+
+test('容形：candidateFromInput 透传 openalexId/retracted（id 剥前缀；缺失不写 undefined）', () => {
+  const full = candidateFromInput({
+    source: 'openalex',
+    identity: { doi: '10.1000/oa-x', title: 'OA X', year: 2024 },
+    openalexId: 'https://openalex.org/W123',
+    retracted: true,
+  })
+  assert.equal(full.openalexId, 'W123')
+  assert.equal(full.retracted, true)
+
+  const bare = candidateFromInput({ source: 'openalex', identity: { title: 'Bare', year: 2024 } })
+  assert.equal('openalexId' in bare, false)
+  assert.equal('retracted' in bare, false)
+  assertLossless(bare)
+})
+
+test('自愈：OpenAlex 撤稿候选经 importEntries 保留 openalexId/retracted，新条目 status=retracted', async () => {
+  const { service, root } = await makeService({ offline: true })
+  try {
+    const result = await service.importEntries('oa', [{
+      source: 'openalex',
+      identity: { doi: '10.1000/oa-retracted', title: 'Retracted Work', year: 2024 },
+      openalexId: 'https://openalex.org/W123',
+      retracted: true,
+    }])
+    assert.equal(result.added, 1)
+    const entries = await storedEntries(root, 'oa')
+    const entry = entries['doi:10.1000/oa-retracted']!
+    assert.equal(entry.openalexId, 'W123')
+    assert.equal(entry.retracted, true)
+    assert.equal(entry.status, 'retracted')
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
 })
 
 test('自愈：openalex 瘦候选（doi 折叠→arxivId）走 arXiv 批量补全，键归 arxiv', async () => {

@@ -29,6 +29,7 @@ export interface PaperState {
         readonly status: string;
         readonly revision: number;
         readonly sections: number;
+        readonly files: number;
     } | undefined;
     readonly engine: {
         readonly engine?: TeXEngine | undefined;
@@ -48,8 +49,9 @@ export interface PaperState {
 export interface WriterDeps {
     readonly fs: SrwFsLike | undefined;
     readonly rootDir: () => string | undefined;
-    /** 进程执行端口（默认真实 execFile；测试注入假引擎）。 */
-    readonly run?: RunPort;
+    /** 进程执行端口：生产装配 nodeRun，测试注入假引擎。**必填**——缺失必须在
+     * 构造期报 NO_PROVIDER，而不是被 probeEngines 的 catch 吞成「引擎不可用」。 */
+    readonly run: RunPort;
     /** 文献库取条目（refsAppend 生成 BibTeX 用）。 */
     readonly libraryEntry?: (project: string, key: string) => Promise<unknown>;
 }
@@ -65,6 +67,21 @@ export declare class WriterService {
     private writeText;
     private venueInstancePath;
     private outlinePath;
+    private mainTexPath;
+    /** 大纲每节都必须绑定合法章节文件（G1 门与编译输入门的共同前提）。 */
+    private assertOutlineBound;
+    /** 把 outline 的章节顺序写回 main.tex 的 \input 清单；main.tex 不存在时跳过。 */
+    private syncInputs;
+    /** 旧项目迁移：scaffold 早期版本的大纲节没有 file，直接确认/编译会 INVALID。
+     * 这里按标题/index 绑定骨架命名（与 scaffold 的 slugFile 一致）并补占位，
+     * 已绑定的节不动；迁移结果写回 outline.json，避免「可确认但不可写」的死路。 */
+    private ensureOutlineFiles;
+    /** 大纲改名/删节后，把不再被引用的旧节文件移入 sections/_orphaned/，
+     * 既保留写作现场，又不让孤儿文件参与 compliance/引用审计。 */
+    private moveOrphanedSections;
+    /** 编译前的输入一致性门：outline.file 序列必须与 main.tex 的 \input 序列逐项相等。
+     * 这不是提示词纪律，而是编译动作的硬前提（静默丢节曾真实发生）。 */
+    private assertInputsMatchOutline;
     venueList(): readonly unknown[];
     venueApply(project: string, venueId: string, tier?: DepthTier): Promise<VenueInstance>;
     private venueOf;

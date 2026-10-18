@@ -23,6 +23,30 @@
       "description": "投稿匹配与合规整改工作流：对照刊物要求与档位核查论文现状，输出机读差距清单与整改路径。",
       "whenToUse": "用户问适合投哪、离投稿还差什么、或要跑合规检查时使用。",
       "dir": "venue-fit"
+    },
+    {
+      "name": "patent-drafting",
+      "description": "专利交底与公开时序工作流：登记专利档案、起草技术交底书、盘点公开事件；投稿/预印本前必跑公开时序门（srw_patent publication.check）。",
+      "whenToUse": "用户要写专利、整理技术交底书，或要在论文投稿/预印本上传/会议报告/开源之前检查专利公开时序时使用。",
+      "dir": "patent-drafting"
+    },
+    {
+      "name": "materials-proof",
+      "description": "素材生成与证明链工作流：表/图/伪代码/公式由 spec+metrics 确定性生成，verify 复算、insert 过溯源门插入正文、numbers 生成数字宏并审计裸数字。",
+      "whenToUse": "用户要为论文生成图表/伪代码/公式并插入正文，或要求「每个数字可溯源/可回指」时使用。",
+      "dir": "materials-proof"
+    },
+    {
+      "name": "experiment-design",
+      "description": "实验设计工作流：把论文档位（D1/D2/D3）要求翻成可执行的实验 spec（数据集/基线/种子/消融/显著性/成本），过设计门后用 srw_experiment submit 提交 GPU 作业并跟踪七态生命周期。",
+      "whenToUse": "用户要设计实验、跑 GPU 实验、提交训练/评测作业，或问「这个档位要哪些实验」时使用。",
+      "dir": "experiment-design"
+    },
+    {
+      "name": "repro-audit",
+      "description": "复现审计工作流：从 spec+runs+registry 审计一次实验是否可复现（代码哈希/种子/环境/数据集哈希），用 claims.check 把论文数字逐点对账，用 gaps.list 列出补数据缺口并按 P0>P1>P2 排期。",
+      "whenToUse": "用户要审计实验可复现性、核对论文数字、盘点补数据缺口，或准备投稿前的证明链时使用。",
+      "dir": "repro-audit"
     }
   ]
 }

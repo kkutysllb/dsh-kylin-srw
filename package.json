@@ -55,7 +55,7 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "node --import tsx --test tests/*.test.ts",
+    "test": "node --import tsx --test --test-force-exit tests/*.test.ts",
     "build": "node scripts/build.mjs",
     "smoke": "node scripts/smoke-plugin.mjs",
     "smoke:negatives": "node scripts/smoke-plugin.mjs --negatives",

@@ -12,6 +12,9 @@ import { type LiteratureService } from './literature/service.ts';
 import { type WatchManager } from './watch/binding.ts';
 import { ReadingService } from './reading/service.ts';
 import { WriterService } from './writer/service.ts';
+import { PatentService } from './patent/service.ts';
+import { ComputeService } from './compute/service.ts';
+import { MaterialsService } from './materials/service.ts';
 /** 与 package.json 同步维护；diag.caps 的 info.version 数据源。 */
 export declare const SRW_VERSION = "0.0.1";
 export interface SrwConfig {
@@ -65,6 +68,19 @@ export declare class SrwService {
     /** 论文线（M5：骨架/大纲 G1/编译/快照/审计/合规）。进程执行用真实
      * runner；文献库条目读取走 literature 域。 */
     get writer(): WriterService;
+    private materialsRef;
+    /** 素材与证明链（M6：确定性生成/复算/插入门/数字宏）。纯本地 IO + 纯函数
+     * 渲染，无进程/LLM 端口——路径护栏 fail-closed（fs 注入），照 patent getter。 */
+    get materials(): MaterialsService;
+    private patentRef;
+    /** 专利域（M9-lite：档案/交底书/公开事件/公开时序门）。纯本地 IO + 纯函数门，
+     * 无进程/LLM 端口——路径护栏 fail-closed（fs 注入）。 */
+    get patent(): PatentService;
+    private experimentRef;
+    /** 实验与算力域（M7：单主机 submit/生命周期/日志/归集/claims 对账/gaps）。
+     * provider 缺省走真实 ssh 三级链（①cm/③direct），测试可注入 fake——
+     * 地址/凭据只经 compute 内部内存面，绝不落盘。 */
+    get experiment(): ComputeService;
     static open(ctx: unknown, rawConfig: SrwConfig): Promise<SrwService>;
     /** 挂上域 handle 并把持久 rootDir 收编进内存判定（config 仍优先）。 */
     private attachIndex;

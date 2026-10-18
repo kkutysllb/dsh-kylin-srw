@@ -37,12 +37,13 @@ export function probeEngines(run: RunPort, timeoutMs = 3000): Promise<EngineProb
 export function compileCommand(engine: TeXEngine, entry: string): { command: TeXEngine; args: readonly string[] } {
   switch (engine) {
     case 'tectonic':
-      return { command: 'tectonic', args: [entry] }
+      // 统一产物落点：service 只认 paper/build/main.pdf（P1-1 的根因是这里没有 outdir）。
+      return { command: 'tectonic', args: ['--outdir', 'build', entry] }
     case 'latexmk':
-      return { command: 'latexmk', args: ['-pdf', '-interaction=nonstopmode', '-halt-on-error', entry] }
+      return { command: 'latexmk', args: ['-pdf', '-interaction=nonstopmode', '-halt-on-error', '-outdir=build', entry] }
     case 'xelatex':
-      return { command: 'xelatex', args: ['-interaction=nonstopmode', entry] }
+      return { command: 'xelatex', args: ['-interaction=nonstopmode', '-output-directory=build', entry] }
     case 'pdflatex':
-      return { command: 'pdflatex', args: ['-interaction=nonstopmode', entry] }
+      return { command: 'pdflatex', args: ['-interaction=nonstopmode', '-output-directory=build', entry] }
   }
 }

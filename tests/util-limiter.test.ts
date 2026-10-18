@@ -67,6 +67,23 @@ test('timeoutOf：超时抛 TimeoutError（我方）；外部取消抛 UpstreamE
   assert.equal(await timeoutOf(50, async () => 'value'), 'value')
 })
 
+test('timeoutOf：外部 signal 预取消——300ms deadline 不等满，<100ms 抛 UpstreamError', async () => {
+  const external = new AbortController()
+  external.abort(new Error('already-cancelled'))
+  let invoked = false
+  const startedAt = Date.now()
+  await assert.rejects(
+    () => timeoutOf(300, async () => {
+      invoked = true
+      await new Promise(() => { /* 若 timer 先赢，只会等到 300ms 后 TimeoutError */ })
+    }, external.signal),
+    (error: unknown) => error instanceof UpstreamError && /already-cancelled/.test(error.message),
+  )
+  const elapsedMs = Date.now() - startedAt
+  assert.equal(invoked, false, '预取消不应再启动任务')
+  assert.ok(elapsedMs < 100, `预取消应 <100ms 失败，实际 ${elapsedMs}ms`)
+})
+
 test('retryWithBackoff：可重试错误退避后成功；不可重试立即透传', async () => {
   let calls = 0
   const value = await retryWithBackoff({

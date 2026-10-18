@@ -6,6 +6,10 @@ import type { SrwFsLike } from '../host.ts';
 import { type SrwService } from '../service.ts';
 import { RateGate } from './rate-gate.ts';
 import { type LitEntry } from './library.ts';
+import { type RetractionState } from '../verify/retraction.ts';
+import { type FulltextDeps, type FulltextResult } from './fulltext.ts';
+import { type PlanRunResult, type ReplayResult, type SavePlanInput, type SearchPlan } from './plan.ts';
+import type { ResolveAddresses } from '../net/ssrf.ts';
 import type { LitCandidate } from './types.ts';
 export interface LiteratureDeps {
     /** 宿主 fs（护栏；注入缺失护栏 fail-closed）。 */
@@ -18,6 +22,18 @@ export interface LiteratureDeps {
     readonly enrichByIds?: (ids: readonly string[]) => Promise<readonly LitCandidate[]>;
     /** 元数据自愈：按通用 DOI 取 Crossref 权威元数据（缺省真网；测试注入 stub）。 */
     readonly enrichByDoi?: (doi: string) => Promise<LitCandidate>;
+    /** P0-6 DOI 校验解析器（缺省 resolveDoi：Crossref + 10s deadline + UA）。 */
+    readonly verifyDoiResolver?: (doi: string) => Promise<LitCandidate>;
+    /** P0-6 撤稿状态查询（缺省 checkRetraction；测试注入 stub）。 */
+    readonly retractionCheck?: (doi: string) => Promise<RetractionState>;
+    /** P0-4 全文下载（缺省 fetchPdf；测试注入 stub）。 */
+    readonly fulltextDownload?: FulltextDeps['download'];
+    /** P0-4 Unpaywall 取数（缺省 gatedFetchJson；测试注入 fixture）。 */
+    readonly unpaywallJson?: FulltextDeps['fetchUnpaywallJson'];
+    /** 测试注入：DNS 解析（本地 http 靶）。 */
+    readonly resolveAddresses?: ResolveAddresses;
+    /** 仅测试：允许回环/私网全文靶机。 */
+    readonly allowPrivateForTest?: boolean;
 }
 /** RPC/工具传入的候选归一校验（宽松形状 → LitCandidate）。 */
 export declare function candidateFromInput(raw: unknown): LitCandidate;
@@ -27,6 +43,12 @@ export declare class LiteratureService {
     private readonly root;
     private readonly enrichByIds;
     private readonly enrichByDoi;
+    private readonly verifyDoiResolver;
+    private readonly retractionCheck;
+    private readonly fulltextDownload;
+    private readonly unpaywallJson;
+    private readonly resolveAddresses;
+    private readonly allowPrivateForTest;
     readonly gate: RateGate;
     constructor(deps: LiteratureDeps);
     private requireRoot;
@@ -41,14 +63,20 @@ export declare class LiteratureService {
      * 已给字段）。自愈失败/离线不阻断入库（退化原样入库）。
      * 返回补全世界（汇报用：去版本 arXiv id / DOI）。 */
     private enrichThin;
-    /** 入库：元数据自愈 → 批内+库内去重 → 新条目 DOI 撤稿核查（失败不阻断）→ 标红。 */
+    /** 入库：元数据自愈 → 批内+库内去重 → DOI 校验（P0-6，失败标 unresolved
+     * 不阻断）→ 新条目撤稿核查（失败不阻断）→ 标红。 */
     importEntries(project: string, candidatesInput: readonly unknown[]): Promise<{
         added: number;
         duplicates: number;
         retracted: string[];
         corrigendum: string[];
         enriched: string[];
+        verified: string[];
+        unresolved: string[];
     }>;
+    /** P0-6：对含 DOI 的候选逐条校验（去重），结果用于 entry.verification。
+     * 网络/404 失败一律标 unresolved（有界错误文本），绝不阻断入库。 */
+    private verifyCandidates;
     /** 按 DOI 直取元数据（校验真伪）。 */
     resolveDoi(doi: string): Promise<LitCandidate>;
     /** 取单条文献条目（writer refsAppend 生成 BibTeX 用）。 */
@@ -68,6 +96,32 @@ export declare class LiteratureService {
         added: readonly string[];
         skippedRetracted: string[];
     }>;
+    private planDeps;
+    planSave(project: string, input: SavePlanInput): Promise<SearchPlan>;
+    planRun(project: string, planId: string): Promise<PlanRunResult>;
+    planList(project: string): Promise<readonly SearchPlan[]>;
+    planReplay(project: string, planId: string, runId?: string): Promise<ReplayResult>;
+    fulltext(project: string, input: {
+        readonly key?: string;
+        readonly doi?: string;
+        readonly allowHost?: string;
+    }): Promise<FulltextResult>;
+    /** 校验 DOI 真伪（Crossref 404 → UNRESOLVED）并返回元数据 + 撤稿状态。 */
+    verifyDoi(doi: string): Promise<{
+        readonly doi: string;
+        readonly resolved: true;
+        readonly metadata: LitCandidate;
+        readonly retracted: boolean;
+        readonly retractionState: RetractionState;
+    }>;
+    /** 引用门：撤稿硬阻断；unresolved DOI 进 warnings（不阻断，提示先核验）。 */
+    citeGate(project: string, keys?: readonly string[]): Promise<{
+        readonly ok: readonly string[];
+        readonly blocked: readonly string[];
+        readonly warnings: readonly string[];
+        readonly reasons: Readonly<Record<string, string>>;
+    }>;
+    migrate(project: string, apply?: boolean): Promise<import('./library.ts').LibraryMigrationReport>;
     private mailto;
 }
 /** 装配：从 SrwService 取动态参数。 */

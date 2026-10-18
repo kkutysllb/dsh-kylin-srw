@@ -84,7 +84,7 @@ interface VenueLite {
 interface PaperStateLite {
   readonly project: string
   readonly venue?: { readonly venueId: string; readonly tier: string }
-  readonly outline?: { readonly status: string; readonly revision: number; readonly sections: number }
+  readonly outline?: { readonly status: string; readonly revision: number; readonly sections: number; readonly files?: number }
   readonly engine: { readonly engine?: string; readonly probes: readonly { readonly engine: string; readonly available: boolean }[] }
   readonly files: { readonly mainTex: boolean; readonly refsBib: boolean; readonly sections: readonly string[]; readonly buildPdf: boolean }
   readonly snapshots: readonly { readonly id: string; readonly createdAt: string; readonly files: number }[]
@@ -1313,7 +1313,7 @@ export function WorkbenchView({ ctx }: { readonly ctx: ClientContext }): React.R
           />
           <button className='srw-btn' disabled={paperBusy || paperState?.venue === undefined || paperState?.files.mainTex === true} onClick={() => { void paperAction('scaffold') }}>生成骨架</button>
           <button className='srw-btn' disabled={paperBusy} onClick={() => { void outlineViaAgent() }}>大纲（Agent）</button>
-          <button className='srw-btn primary' disabled={paperBusy || paperState?.outline?.status !== 'draft'} title='G1 确认门：确认后 Agent 才能写正文' onClick={() => { void paperAction('confirm') }}>确认大纲</button>
+          <button className='srw-btn primary' disabled={paperBusy || paperState?.outline?.status !== 'draft'} title='G1 确认门：确认后 Agent 才能写正文（旧大纲会在确认时自动绑定节文件）' onClick={() => { void paperAction('confirm') }}>确认大纲</button>
           <button className='srw-btn' disabled={paperBusy || paperState?.outline?.status !== 'confirmed'} onClick={() => { void sectionViaAgent() }}>正文（Agent）</button>
           <button className='srw-btn' disabled={paperBusy || paperState?.files.mainTex !== true} onClick={() => { void paperAction('compile') }}>编译</button>
           <button className='srw-btn' disabled={paperBusy || paperState?.files.mainTex !== true} onClick={() => { void paperAction('audit') }}>引用审计</button>

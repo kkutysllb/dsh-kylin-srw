@@ -8,7 +8,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { refold, parseTeXLog } from '../src/writer/texlog.ts'
 import { compilePaper, fallbackError } from '../src/writer/compile.ts'
-import { renderScaffold } from '../src/writer/scaffold.ts'
+import { renderScaffold, INPUT_BEGIN, INPUT_END, syncInputBlock } from '../src/writer/scaffold.ts'
+import { compileCommand } from '../src/writer/engine.ts'
 import { extractCiteKeys, auditCites } from '../src/writer/cite-audit.ts'
 import { createSnapshot, listSnapshots, restoreSnapshot } from '../src/writer/snapshot.ts'
 import { emptyOutline, parseOutline, serializeOutline, confirmOutline, assertConfirmed, outlinePrompt } from '../src/writer/outline.ts'
@@ -92,6 +93,42 @@ test('compile：tectonic 单轮成功；latexmk Rerun 提示触发重跑（≤2�
   assert.equal(latexmkCalls, 3)
 })
 
+test('compile：xelatex + bibtex 串行；bbl 与最终 pass 的 undefined citation 统计', async () => {
+  const cwd = await mkdtemp(join(tmpdir(), 'srw-bib-'))
+  try {
+    await mkdir(join(cwd, 'build'), { recursive: true })
+    const commands: string[] = []
+    let xelatexCalls = 0
+    const outcome = await compilePaper({
+      engine: 'xelatex',
+      entry: 'main.tex',
+      cwd,
+      bibTool: 'bibtex',
+      run: async (command) => {
+        commands.push(command)
+        if (command === 'bibtex') {
+          await writeFile(join(cwd, 'build', 'main.bbl'), '\\begin{thebibliography}{1}\n')
+          return { stdout: 'bibtex: wrote main.bbl', stderr: '' }
+        }
+        xelatexCalls += 1
+        // 首轮有未解析引用（后续轮修好）：统计只看最终 pass，不能把历史噪声算进结果。
+        return {
+          stdout: xelatexCalls === 1
+            ? "LaTeX Warning: Citation \`x' undefined on input line 1.\nOutput written on main.pdf (1 page)."
+            : 'Output written on main.pdf (1 page).',
+          stderr: '',
+        }
+      },
+    })
+    assert.deepEqual(commands, ['xelatex', 'bibtex', 'xelatex', 'xelatex'])
+    assert.equal(outcome.ok, true)
+    assert.equal(outcome.reran, 2)
+    assert.deepEqual(outcome.bib, { tool: 'bibtex', bbl: true, undefinedCitations: 0 })
+  } finally {
+    await rm(cwd, { recursive: true, force: true })
+  }
+})
+
 test('compile：非零退出（nonstopmode 日志）→ 结构化错误，fallbackError 兜底', async () => {
   const failingLog = [
     '(./sections/02-method.tex',
@@ -125,6 +162,34 @@ test('scaffold：按 venue 渲染 main.tex + sections + refs.bib（结构体检�
   const zh = renderScaffold({ venue: getVenue('cn-journal')!, title: '语义通信综述' })
   assert.ok(zh.mainTex.includes('\\documentclass[zihao=-4,a4paper]{ctexart}'))
   assert.ok(zh.mainTex.includes('引言'))
+})
+
+test('scaffold：输入清单由大纲单源重写（标记块 + 旧项目 fallback），不静默丢节', () => {
+  const venue = getVenue('ieee-journal')!
+  const plan = renderScaffold({ venue, title: 'T' })
+  assert.ok(plan.mainTex.includes(INPUT_BEGIN))
+  assert.ok(plan.mainTex.includes(INPUT_END))
+  const sections = [
+    { title: 'Introduction', file: 'sections/01-introduction.tex' },
+    { title: 'Method', file: 'sections/03-method.tex' },
+  ]
+  const synced = syncInputBlock(plan.mainTex, sections)
+  assert.ok(synced.includes('\\input{sections/01-introduction} % Introduction'))
+  assert.ok(synced.includes('\\input{sections/03-method} % Method'))
+  assert.ok(!synced.includes('02-related-work'))
+  assert.ok(synced.indexOf(INPUT_BEGIN) < synced.indexOf(INPUT_END))
+  // 旧项目（无标记）也要能替换第一段连续 input
+  const legacy = plan.mainTex.replace(INPUT_BEGIN, '').replace(INPUT_END, '')
+  const legacySynced = syncInputBlock(legacy, sections)
+  assert.ok(legacySynced.includes('\\input{sections/03-method}'))
+  assert.ok(!legacySynced.includes('02-related-work'))
+})
+
+test('compileCommand：四种引擎都统一输出到 build/', () => {
+  assert.deepEqual(compileCommand('tectonic', 'main.tex').args, ['--outdir', 'build', 'main.tex'])
+  assert.ok(compileCommand('latexmk', 'main.tex').args.includes('-outdir=build'))
+  assert.ok(compileCommand('xelatex', 'main.tex').args.includes('-output-directory=build'))
+  assert.ok(compileCommand('pdflatex', 'main.tex').args.includes('-output-directory=build'))
 })
 
 test('cite-audit：差集正确；\\cite 多 key/可选参数；\\nocite{*} 单独标记', () => {
@@ -174,6 +239,28 @@ test('snapshot：创建留档带哈希；回滚哈希一致恢复；篡改留档
       (error: unknown) => error instanceof ServiceError && error.code === 'CORRUPT',
     )
     assert.equal((await listSnapshots(paper)).find(item => item.id === snap.id)?.engine, 'tectonic')
+  } finally {
+    await rm(paper, { recursive: true, force: true })
+  }
+})
+
+test('snapshot：伪造 manifest 的越界路径 → FORBIDDEN（不写 paper 外）', async () => {
+  const paper = await mkdtemp(join(tmpdir(), 'srw-paper-'))
+  try {
+    await mkdir(join(paper, 'sections'), { recursive: true })
+    await writeFile(join(paper, 'main.tex'), '\\documentclass{article}\n')
+    await writeFile(join(paper, 'sections', '01-introduction.tex'), '\\section{Introduction}\n')
+    await writeFile(join(paper, 'refs.bib'), '@article{a, title={A}}\n')
+    const snap = await createSnapshot(paper)
+    const manifestPath = join(paper, 'snapshots', snap.id, 'manifest.json')
+    const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as { files: Record<string, string> }
+    manifest.files['../escaped.txt'] = '0'.repeat(64)
+    await writeFile(manifestPath, JSON.stringify(manifest))
+    await assert.rejects(
+      () => restoreSnapshot(paper, snap.id),
+      (error: unknown) => error instanceof ServiceError && error.code === 'FORBIDDEN',
+    )
+    await assert.rejects(() => readFile(join(paper, '..', 'escaped.txt')))
   } finally {
     await rm(paper, { recursive: true, force: true })
   }

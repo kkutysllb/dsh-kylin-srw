@@ -5,3 +5,9 @@ node_modules/
 *.log
 .DS_Store
 tmp/
+
+# 构建/探针产物（根 build/ 不是发布目录；lib/ 才是）
+build/
+
+# 本地真引擎验收工具（tectonic 二进制与 TeX bundle 缓存，不入库）
+.tools/

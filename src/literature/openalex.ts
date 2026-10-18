@@ -1,7 +1,9 @@
 /** OpenAlex 适配器（0203 Task 2.3）：`per_page` 钳 ≤100，cursor 翻页
  * （`meta.next_cursor` 为 null/缺失即止）。归一化剥离 doi 的
  * `https://doi.org/` 前缀；OA 链接取 `open_access.oa_url`，
- * PDF 取 `best_oa_location.pdf_url`。 */
+ * PDF 取 `best_oa_location.pdf_url`；摘要优先明文 `abstract`，否则按
+ * `abstract_inverted_index` 的 position 还原；消费 `is_retracted` 与
+ * `id`（剥 `https://openalex.org/` 前缀存 openalexId）。 */
 
 import { ServiceError } from '../service.ts'
 import { gatedFetchJson } from './http.ts'
@@ -14,6 +16,29 @@ export const OPENALEX_PER_PAGE_MAX = 100
 /** 剥 DOI 前缀（OpenAlex 给 `https://doi.org/10.xxxx/yy`）。 */
 export function stripDoiPrefix(doi: string): string {
   return doi.replace(/^https?:\/\/doi\.org\//i, '').toLowerCase()
+}
+
+/** 剥 OpenAlex Work id 的 `https://openalex.org/` 前缀（已裸 id 原样返回）。 */
+export function stripOpenAlexIdPrefix(id: string): string {
+  return id.trim().replace(/^https?:\/\/openalex\.org\//i, '')
+}
+
+/** 从 `abstract_inverted_index`（`{word: [positions…]}`）按 position 升序
+ * 还原摘要（空格连接）。真实 API 只给这个字段，之前只读 `abstract` 导致摘要
+ * 恒空（P0-4）。容忍 null/数组/非对象/坏位置：坏词丢弃、不抛；无可用位置
+ * 时返回空串。 */
+export function abstractFromInvertedIndex(value: unknown): string {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return ''
+  const words: Array<{ position: number; word: string }> = []
+  for (const [word, rawPositions] of Object.entries(value as Record<string, unknown>)) {
+    if (word === '' || !Array.isArray(rawPositions)) continue
+    for (const raw of rawPositions) {
+      if (typeof raw !== 'number' || !Number.isInteger(raw) || raw < 0) continue
+      words.push({ position: raw, word })
+    }
+  }
+  words.sort((a, b) => a.position - b.position)
+  return words.map(item => item.word).join(' ')
 }
 
 /** 归一化一页 results（fixture 单测面）。 */
@@ -54,6 +79,11 @@ export function parseOpenAlexResults(results: readonly unknown[]): LitCandidate[
     })()
     const oaUrl = typeof oa?.['oa_url'] === 'string' && oa['oa_url'] !== '' ? oa['oa_url'] : undefined
     const pdfUrl = typeof bestOa?.['pdf_url'] === 'string' && bestOa['pdf_url'] !== '' ? bestOa['pdf_url'] : undefined
+    // 真实 API 通常只有 abstract_inverted_index；两字段都在时明文 abstract 优先。
+    const plainAbstract = typeof work['abstract'] === 'string' && work['abstract'].trim() !== '' ? work['abstract'] : ''
+    const abstract = plainAbstract !== '' ? plainAbstract : abstractFromInvertedIndex(work['abstract_inverted_index'])
+    const openalexId = typeof work['id'] === 'string' ? stripOpenAlexIdPrefix(work['id']) : ''
+    const retracted = work['is_retracted']
     candidates.push({
       source: 'openalex',
       identity: {
@@ -63,7 +93,9 @@ export function parseOpenAlexResults(results: readonly unknown[]): LitCandidate[
       },
       authors,
       venue,
-      abstract: typeof work['abstract'] === 'string' ? work['abstract'] : '',
+      abstract,
+      ...(openalexId !== '' ? { openalexId } : {}),
+      ...(typeof retracted === 'boolean' ? { retracted } : {}),
       ...(typeof work['publication_date'] === 'string' ? { publishedAt: work['publication_date'] } : {}),
       ...(oaUrl !== undefined ? { oaUrl } : {}),
       ...(pdfUrl !== undefined ? { pdfUrl } : {}),

@@ -11,13 +11,16 @@ import { ServiceError, type SrwService } from '../service.ts'
 import { RateGate } from './rate-gate.ts'
 import { gatedFetchJson } from './http.ts'
 import { searchArxiv, fetchArxivByIds } from './arxiv.ts'
-import { searchOpenAlex } from './openalex.ts'
+import { searchOpenAlex, stripOpenAlexIdPrefix } from './openalex.ts'
 import { searchCrossref, resolveDoi, parseCrossrefWork } from './crossref.ts'
 import { identityKey, normalizeIdentity } from './identity.ts'
-import { LibraryStore, type LitEntry } from './library.ts'
+import { LibraryStore, type EntryVerification, type LitEntry } from './library.ts'
 import { fetchPdfFor } from './pdf.ts'
 import { appendToRefs, citekeyOf, entryOrThrow } from './bibtex.ts'
-import { checkRetraction } from '../verify/retraction.ts'
+import { checkRetraction, type RetractionState } from '../verify/retraction.ts'
+import { fetchFulltext, normalizeDoi, type FulltextDeps, type FulltextResult } from './fulltext.ts'
+import { listPlans, replayPlan, runPlan, savePlan, type PlanDeps, type PlanRunResult, type ReplayResult, type SavePlanInput, type SearchPlan } from './plan.ts'
+import type { ResolveAddresses } from '../net/ssrf.ts'
 import type { LitCandidate, LitSource } from './types.ts'
 
 const SOURCES: readonly LitSource[] = ['arxiv', 'openalex', 'crossref']
@@ -33,6 +36,18 @@ export interface LiteratureDeps {
   readonly enrichByIds?: (ids: readonly string[]) => Promise<readonly LitCandidate[]>
   /** 元数据自愈：按通用 DOI 取 Crossref 权威元数据（缺省真网；测试注入 stub）。 */
   readonly enrichByDoi?: (doi: string) => Promise<LitCandidate>
+  /** P0-6 DOI 校验解析器（缺省 resolveDoi：Crossref + 10s deadline + UA）。 */
+  readonly verifyDoiResolver?: (doi: string) => Promise<LitCandidate>
+  /** P0-6 撤稿状态查询（缺省 checkRetraction；测试注入 stub）。 */
+  readonly retractionCheck?: (doi: string) => Promise<RetractionState>
+  /** P0-4 全文下载（缺省 fetchPdf；测试注入 stub）。 */
+  readonly fulltextDownload?: FulltextDeps['download']
+  /** P0-4 Unpaywall 取数（缺省 gatedFetchJson；测试注入 fixture）。 */
+  readonly unpaywallJson?: FulltextDeps['fetchUnpaywallJson']
+  /** 测试注入：DNS 解析（本地 http 靶）。 */
+  readonly resolveAddresses?: ResolveAddresses
+  /** 仅测试：允许回环/私网全文靶机。 */
+  readonly allowPrivateForTest?: boolean
 }
 
 function assertSource(source: string): LitSource {
@@ -105,6 +120,10 @@ export function candidateFromInput(raw: unknown): LitCandidate {
   const identity: LitCandidate['identity'] = normalizeIdentity({
     ...(typeof identityRaw['doi'] === 'string' && identityRaw['doi'] !== '' ? { doi: identityRaw['doi'].toLowerCase() } : {}),
     ...(typeof identityRaw['arxivId'] === 'string' && identityRaw['arxivId'] !== '' ? { arxivId: identityRaw['arxivId'] } : {}),
+    // P0-3：已折叠条目回传时保留原 DOI（search 结果 → import 的 round-trip）
+    ...(typeof identityRaw['canonicalDoi'] === 'string' && identityRaw['canonicalDoi'] !== ''
+      ? { canonicalDoi: identityRaw['canonicalDoi'] }
+      : {}),
     title: identityRaw['title'],
     year: yearFrom(identityRaw, m),
   })
@@ -116,6 +135,12 @@ export function candidateFromInput(raw: unknown): LitCandidate {
   }
   const pdfUrl = pickUrl('pdfUrl')
   const oaUrl = pickUrl('oaUrl')
+  // 源侧标记必须透传：OpenAlex 解析出的 openalexId/is_retracted 若在
+  // RPC/工具入库时被这里剪掉，库层就永远看不到撤稿信号（P0-4 断链）。
+  // id 兼容裸值/URL 两种形态（剥 https://openalex.org/ 前缀）。
+  const openalexIdRaw = typeof m['openalexId'] === 'string' ? stripOpenAlexIdPrefix(m['openalexId']) : ''
+  const openalexId = openalexIdRaw === '' ? undefined : openalexIdRaw
+  const retracted = typeof m['retracted'] === 'boolean' ? m['retracted'] : undefined
   return {
     source,
     identity,
@@ -125,6 +150,8 @@ export function candidateFromInput(raw: unknown): LitCandidate {
     ...(typeof m['publishedAt'] === 'string' ? { publishedAt: m['publishedAt'] } : {}),
     ...(pdfUrl === undefined ? {} : { pdfUrl }),
     ...(oaUrl === undefined ? {} : { oaUrl }),
+    ...(openalexId === undefined ? {} : { openalexId }),
+    ...(retracted === undefined ? {} : { retracted }),
     ...(typeof m['citedByCount'] === 'number' ? { citedByCount: m['citedByCount'] } : {}),
   }
 }
@@ -155,6 +182,12 @@ export class LiteratureService {
   private readonly root: () => string | undefined
   private readonly enrichByIds: (ids: readonly string[]) => Promise<readonly LitCandidate[]>
   private readonly enrichByDoi: (doi: string) => Promise<LitCandidate>
+  private readonly verifyDoiResolver: (doi: string) => Promise<LitCandidate>
+  private readonly retractionCheck: (doi: string) => Promise<RetractionState>
+  private readonly fulltextDownload: FulltextDeps['download'] | undefined
+  private readonly unpaywallJson: FulltextDeps['fetchUnpaywallJson'] | undefined
+  private readonly resolveAddresses: ResolveAddresses | undefined
+  private readonly allowPrivateForTest: boolean
   readonly gate: RateGate
 
   constructor(deps: LiteratureDeps) {
@@ -166,6 +199,18 @@ export class LiteratureService {
       const mailto = await this.mailto()
       return await resolveDoi({ gate: this.gate, ...(mailto === undefined ? {} : { mailto }) }, doi)
     })
+    this.verifyDoiResolver = deps.verifyDoiResolver ?? (async doi => {
+      const mailto = await this.mailto()
+      return await resolveDoi({ gate: this.gate, ...(mailto === undefined ? {} : { mailto }) }, doi)
+    })
+    this.retractionCheck = deps.retractionCheck ?? (async doi => {
+      const mailto = await this.mailto()
+      return await checkRetraction({ gate: this.gate, ...(mailto === undefined ? {} : { mailto }) }, doi)
+    })
+    this.fulltextDownload = deps.fulltextDownload
+    this.unpaywallJson = deps.unpaywallJson
+    this.resolveAddresses = deps.resolveAddresses
+    this.allowPrivateForTest = deps.allowPrivateForTest === true
     this.gate = new RateGate({
       ledgerPath: () => {
         const root = this.root()
@@ -260,31 +305,51 @@ export class LiteratureService {
     return { candidates: out, enriched: enriched.filter(item => item !== '') }
   }
 
-  /** 入库：元数据自愈 → 批内+库内去重 → 新条目 DOI 撤稿核查（失败不阻断）→ 标红。 */
+  /** 入库：元数据自愈 → 批内+库内去重 → DOI 校验（P0-6，失败标 unresolved
+   * 不阻断）→ 新条目撤稿核查（失败不阻断）→ 标红。 */
   async importEntries(project: string, candidatesInput: readonly unknown[]): Promise<{
     added: number
     duplicates: number
     retracted: string[]
     corrigendum: string[]
     enriched: string[]
+    verified: string[]
+    unresolved: string[]
   }> {
     const slug = assertProject(project)
     const parsed = candidatesInput.map(candidateFromInput)
     const { candidates, enriched } = this.offline()
       ? { candidates: parsed, enriched: [] }
       : await this.enrichThin(parsed)
+    // P0-6：含 DOI 的候选入库前跑一次 resolveDoi；失败标 unresolved 但不阻断。
+    // （arXiv 自赋 DOI 已折叠为 arxivId，不重复校验。）
+    const verification = candidates.length > 0 && !this.offline()
+      ? await this.verifyCandidates(candidates)
+      : new Map<string, EntryVerification>()
     const store = this.store(slug)
-    const result = await store.upsert(slug, candidates)
+    const upserted = await store.upsert(slug, candidates)
+    let doc = upserted.doc
+    if (verification.size > 0) {
+      let changed = false
+      for (const [key, entry] of Object.entries(doc.entries)) {
+        const doi = entry.identity.doi
+        if (doi === undefined) continue
+        const evidence = verification.get(doi.toLowerCase())
+        if (evidence === undefined) continue
+        doc.entries[key] = { ...entry, verification: evidence }
+        changed = true
+      }
+      if (changed) doc = await store.save(slug, doc, doc.revision)
+    }
     const retracted: string[] = []
     const corrigendum: string[] = []
     if (candidates.length > 0 && !this.offline()) {
-      for (const item of Object.values(result.doc.entries)) {
+      for (const item of Object.values(doc.entries)) {
         const doi = item.identity.doi
         if (doi === undefined || item.status === 'retracted') continue
         if (Date.parse(item.addedAt) < Date.now() - 60_000) continue // 老条目不重复核查
         try {
-          const mailto = await this.mailto()
-          const state = await checkRetraction({ gate: this.gate, ...(mailto === undefined ? {} : { mailto }) }, doi)
+          const state = await this.retractionCheck(doi)
           if (state === 'retracted') {
             await store.updateEntry(slug, item.key, entry => ({ ...entry, status: 'retracted' }))
             retracted.push(item.key)
@@ -296,7 +361,43 @@ export class LiteratureService {
         } catch { /* 撤稿核查失败不阻断入库 */ }
       }
     }
-    return { added: result.added, duplicates: result.duplicates, retracted, corrigendum, enriched }
+    const verified = [...verification.entries()].filter(([, value]) => value.status === 'verified').map(([doi]) => doi)
+    const unresolved = [...verification.entries()].filter(([, value]) => value.status === 'unresolved').map(([doi]) => doi)
+    return { added: upserted.added, duplicates: upserted.duplicates, retracted, corrigendum, enriched, verified, unresolved }
+  }
+
+  /** P0-6：对含 DOI 的候选逐条校验（去重），结果用于 entry.verification。
+   * 网络/404 失败一律标 unresolved（有界错误文本），绝不阻断入库。 */
+  private async verifyCandidates(
+    candidates: readonly LitCandidate[],
+  ): Promise<Map<string, EntryVerification>> {
+    const out = new Map<string, EntryVerification>()
+    for (const candidate of candidates) {
+      const doi = candidate.identity.doi
+      if (doi === undefined || doi === '') continue
+      const key = doi.toLowerCase()
+      if (out.has(key)) continue
+      const checkedAt = new Date().toISOString()
+      try {
+        await this.verifyDoiResolver(doi)
+        let retracted: boolean | undefined
+        try {
+          retracted = await this.retractionCheck(doi) === 'retracted' ? true : undefined
+        } catch { /* 撤稿核查失败不升级为 unresolved：DOI 本身已解析成功 */ }
+        out.set(key, {
+          status: 'verified',
+          checkedAt,
+          ...(retracted === undefined ? {} : { retracted }),
+        })
+      } catch (error: unknown) {
+        out.set(key, {
+          status: 'unresolved',
+          checkedAt,
+          error: (error instanceof Error ? error.message : String(error)).slice(0, 300),
+        })
+      }
+    }
+    return out
   }
 
   /** 按 DOI 直取元数据（校验真伪）。 */
@@ -357,7 +458,7 @@ export class LiteratureService {
     const exportable: LitEntry[] = []
     const skippedRetracted: string[] = []
     for (const entry of selected) {
-      if (entry.status === 'retracted') {
+      if (entry.status === 'retracted' || entry.verification?.retracted === true) {
         skippedRetracted.push(entry.key)
         continue
       }
@@ -366,6 +467,156 @@ export class LiteratureService {
     const refsPath = join(root, slug, 'paper', 'refs.bib')
     const result = await appendToRefs(refsPath, exportable)
     return { added: result.added, skippedRetracted }
+  }
+
+  // ── P0-5 检索计划：保存不触网；run 三源并发；replay 只读本地 ──
+
+  private planDeps(): PlanDeps {
+    const root = this.requireRoot()
+    return {
+      fs: this.fs,
+      rootDir: root,
+      offline: () => this.offline(),
+      search: async (source, query, limit) => await this.search(source, query, limit),
+    }
+  }
+
+  async planSave(project: string, input: SavePlanInput): Promise<SearchPlan> {
+    assertProject(project)
+    return await savePlan(this.planDeps(), project, input)
+  }
+
+  async planRun(project: string, planId: string): Promise<PlanRunResult> {
+    assertProject(project)
+    return await runPlan(this.planDeps(), project, planId)
+  }
+
+  async planList(project: string): Promise<readonly SearchPlan[]> {
+    assertProject(project)
+    return await listPlans(this.planDeps(), project)
+  }
+
+  async planReplay(project: string, planId: string, runId?: string): Promise<ReplayResult> {
+    assertProject(project)
+    return await replayPlan(this.planDeps(), project, planId, runId)
+  }
+
+  // ── P0-4 全文获取：Unpaywall OA + 域确认 + 内容门 + 证据落盘 ──
+
+  async fulltext(project: string, input: {
+    readonly key?: string
+    readonly doi?: string
+    readonly allowHost?: string
+  }): Promise<FulltextResult> {
+    this.assertOnline()
+    const slug = assertProject(project)
+    const root = this.requireRoot()
+    const store = this.store(slug)
+    let entry: LitEntry | undefined
+    if (input.key !== undefined && input.key !== '') {
+      const doc = await store.load(slug)
+      entry = entryOrThrow(doc.entries, input.key)
+    } else if (input.doi === undefined || input.doi === '') {
+      throw new ServiceError('INVALID', 'fulltext 需要 key 或 doi')
+    }
+    const doi = input.doi !== undefined && input.doi !== ''
+      ? input.doi
+      : entry?.identity.doi ?? entry?.identity.canonicalDoi
+    const config = await readRootConfig(root)
+    const deps: FulltextDeps = {
+      fs: this.fs,
+      rootDir: root,
+      gate: this.gate,
+      ...(config.unpaywallEmail === undefined ? {} : { unpaywallEmail: config.unpaywallEmail }),
+      ...(config.fulltext?.confirmedHosts === undefined ? {} : { confirmedHosts: config.fulltext.confirmedHosts }),
+      ...(this.unpaywallJson === undefined ? {} : { fetchUnpaywallJson: this.unpaywallJson }),
+      ...(this.fulltextDownload === undefined ? {} : { download: this.fulltextDownload }),
+      ...(this.resolveAddresses === undefined ? {} : { resolveAddresses: this.resolveAddresses }),
+      ...(this.allowPrivateForTest ? { allowPrivateForTest: true } : {}),
+    }
+    const result = await fetchFulltext(deps, slug, entry, {
+      ...(doi === undefined ? {} : { doi }),
+      ...(input.allowHost === undefined ? {} : { allowHost: input.allowHost }),
+    })
+    if (entry !== undefined) {
+      await store.updateEntry(slug, entry.key, current => ({
+        ...current,
+        status: current.status === 'retracted' ? 'retracted' : 'has-pdf',
+        pdf: {
+          file: result.file,
+          sha256: result.sha256,
+          bytes: result.bytes,
+          url: result.finalUrl,
+          finalUrl: result.finalUrl,
+          retrievedAt: result.evidence.retrievedAt,
+          contentType: result.contentType,
+        },
+      }))
+    }
+    return result
+  }
+
+  // ── P0-6 DOI 校验与引用门 ──
+
+  /** 校验 DOI 真伪（Crossref 404 → UNRESOLVED）并返回元数据 + 撤稿状态。 */
+  async verifyDoi(doi: string): Promise<{
+    readonly doi: string
+    readonly resolved: true
+    readonly metadata: LitCandidate
+    readonly retracted: boolean
+    readonly retractionState: RetractionState
+  }> {
+    this.assertOnline()
+    const normalized = normalizeDoi(doi)
+    const metadata = await this.verifyDoiResolver(normalized)
+    let retractionState: RetractionState = 'unknown'
+    try {
+      retractionState = await this.retractionCheck(normalized)
+    } catch { /* 撤稿查询失败不把「DOI 解析成功」降级 */ }
+    return {
+      doi: normalized,
+      resolved: true,
+      metadata,
+      retracted: retractionState === 'retracted',
+      retractionState,
+    }
+  }
+
+  /** 引用门：撤稿硬阻断；unresolved DOI 进 warnings（不阻断，提示先核验）。 */
+  async citeGate(project: string, keys?: readonly string[]): Promise<{
+    readonly ok: readonly string[]
+    readonly blocked: readonly string[]
+    readonly warnings: readonly string[]
+    readonly reasons: Readonly<Record<string, string>>
+  }> {
+    const slug = assertProject(project)
+    const doc = await this.store(slug).load(slug)
+    const selected = keys !== undefined && keys.length > 0
+      ? keys.map(key => entryOrThrow(doc.entries, key))
+      : Object.values(doc.entries)
+    const ok: string[] = []
+    const blocked: string[] = []
+    const warnings: string[] = []
+    const reasons: Record<string, string> = {}
+    for (const entry of selected) {
+      if (entry.status === 'retracted' || entry.retracted === true || entry.verification?.retracted === true) {
+        blocked.push(entry.key)
+        reasons[entry.key] = 'RETRACTED'
+      } else if (entry.verification?.status === 'unresolved') {
+        warnings.push(entry.key)
+        reasons[entry.key] = 'UNRESOLVED'
+      } else {
+        ok.push(entry.key)
+      }
+    }
+    return { ok, blocked, warnings, reasons }
+  }
+
+  // ── P0-3 身份迁移 ──
+
+  async migrate(project: string, apply = false): Promise<import('./library.ts').LibraryMigrationReport> {
+    const slug = assertProject(project)
+    return await this.store(slug).migrate(slug, apply ? { apply: true } : {})
   }
 
   private async mailto(): Promise<string | undefined> {

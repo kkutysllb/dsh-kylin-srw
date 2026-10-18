@@ -171,6 +171,9 @@ export async function translateBlocks(
               else if (item.type === 'usage') callTokens = item.usage.totalTokens ?? 0
               else if (item.type === 'finish' && (item.reason.kind === 'error' || item.reason.kind === 'aborted')) {
                 throw new Error(`llm stream finished with ${item.reason.kind}`)
+              } else if (item.type === 'finish' && item.reason.kind === 'length') {
+                // P0-7：截断译文不是完整译文——按失败处理，绝不写缓存
+                throw new Error('llm stream truncated (finish reason=length)')
               }
             }
             tokens += callTokens

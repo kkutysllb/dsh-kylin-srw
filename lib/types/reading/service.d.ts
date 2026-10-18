@@ -9,6 +9,8 @@ import { type SourceMap } from './source-map.ts';
 import { type LlmPort } from './translator.ts';
 export type { LlmPort };
 import { type VerifyReport } from './verify.ts';
+/** P0-7：单批翻译块数上限（服务端硬 clamp；agent 提示词的 ≤40 不再是唯一闸）。 */
+export declare const MAX_TRANSLATE_BLOCKS = 40;
 export interface ReadingDeps {
     readonly fs: SrwFsLike | undefined;
     readonly rootDir: () => string | undefined;
@@ -75,7 +77,13 @@ export declare class ReadingService {
         orphan: number;
     }>;
     /** 翻译：缓存命中跳过；miss 走 llm（缺席报 INVALID）→ 术语强校验 →
-     * 写缓存/更新 map 元数据 → 重渲染 paper.md → verify。 */
+     * 写缓存/更新 map 元数据 → 重渲染 paper.md → verify。
+     *
+     * P0-7 批量续跑四点：
+     * 1. 任一块失败时**先把本批已成功译文写进缓存**再抛（原先整批丢）；
+     * 2. finish.reason='length' 在 translator 层已按失败处理并报 TRUNCATED；
+     * 3. 服务端 clamp：显式 keys >40 → INVALID；未给 keys 时单批最多取 40 块；
+     * 4. 重试/续跑命中缓存则零 LLM 调用（pending 只含 miss 块）。 */
     translate(project: string, paperKey: string, options?: {
         keys?: readonly string[];
         force?: boolean;

@@ -7,10 +7,14 @@
  */
 import { type SrwService } from './service.ts';
 import type { ProjectMeta } from './core/schema.ts';
+import type { PatentMeta } from './patent/types.ts';
 import type { LitCandidate } from './literature/types.ts';
 export declare const SRW_TOOL_NAME = "srw_project";
+export declare const SRW_EXPERIMENT_TOOL_NAME = "srw_experiment";
 export declare const SRW_LIT_TOOL_NAME = "srw_literature";
 export declare const SRW_WATCH_TOOL_NAME = "srw_watch";
+export declare const SRW_PATENT_TOOL_NAME = "srw_patent";
+export declare const SRW_MATERIALS_TOOL_NAME = "srw_materials";
 /** 需要人工审批的动作（list/open/lib/search/bibtex 豁免）。 */
 export declare const SRW_ASK_ACTIONS: ReadonlySet<string>;
 export declare const SRW_LIT_ASK_ACTIONS: ReadonlySet<string>;
@@ -98,3 +102,23 @@ export declare function srwPaperToolDef(service: SrwService): SrwToolDef;
  * token，工具描述把分批协议写成硬纪律（每批 ≤40 块 + 逐批汇报）。 */
 export declare const SRW_READ_TOOL_NAME = "srw_read";
 export declare function srwReadToolDef(service: SrwService): SrwToolDef;
+/** 专利单行摘要（模型面向，有界；照 projectSummary 形状）。 */
+export declare function patentSummary(meta: PatentMeta): string;
+/** `srw_patent` 工具（M9-lite）：专利档案 + 技术交底书 + 公开时序门。
+ * 审批：create 需人工 ask（建档案目录）；其余豁免——disclosure/event 是项目域
+ * 内草稿 IO（与 srw_paper 同款豁免），publication.check 是纯读计算。
+ * 红线进描述：先申请后公开，投稿/预印本/答辩/开源前必跑 publication.check。 */
+export declare function srwPatentToolDef(service: SrwService): SrwToolDef;
+/** srw_materials 工具（M6 素材与证明链）：metrics.import 导入手工实验数据；
+ * generate 由 spec+metrics 确定性渲染五类素材；verify 复算（重渲染比对哈希）；
+ * insert 过 G-M1 溯源门插进正文（需审批）；remove 撤销插入；numbers 生成
+ * 数字宏表；numbers.audit 审计未溯源裸数字。红线：无 metrics 不生成、不编造、
+ * mismatch 阻断、illustrative 默认拒绝、公式恒「未验证」须脚注。 */
+export declare function srwMaterialsToolDef(service: SrwService): SrwToolDef;
+/** srw_experiment 工具（M7 实验与算力 MVP，单主机）：hosts 盘点 GPU 主机
+ * （可达性 + 环境/GPU 快照，输出只含 hostRef+label）；submit 提交实验
+ * （需审批：spec 门 confirm + D 档缺口 ack + GPU 选卡 + setsid 脱离会话）；
+ * status/logs/collect 轮询 7 态/偏移续读日志/回传指标与产物（sha256 对账）；
+ * cancel 取消（需审批，进程组 TERM→KILL）；claims.check 论文数字对账；
+ * gaps.list 补数据缺口；dataset.register 数据集注册。 */
+export declare function srwExperimentToolDef(service: SrwService): SrwToolDef;

@@ -27,6 +27,15 @@ export async function timeoutOf<T>(
   run: (signal: AbortSignal) => Promise<T>,
   external?: AbortSignal,
 ): Promise<T> {
+  // 用函数读取而不是内联比较：TS 会对 const external 做控制流收窄，
+  // 内联比较在 try 后的 catch 里会被判成「恒 false」。
+  const externallyAborted = (): boolean => external?.aborted === true
+  // 外部信号在进入前已 abort：不再起 timer 等满 deadline，直接失败
+  // （P1-16：translator 取消后排队 worker 仍被调度，旧实现因此残留
+  // 4×60s 定时器，单测套件被拖到 61s）。signal.reason 是取消原因，透传。
+  if (externallyAborted()) {
+    throw new UpstreamError(external?.reason ?? new Error('aborted'))
+  }
   const controller = new AbortController()
   const onExternal = (): void => { controller.abort() }
   external?.addEventListener('abort', onExternal, { once: true })
@@ -34,7 +43,7 @@ export async function timeoutOf<T>(
   try {
     return await run(controller.signal)
   } catch (error: unknown) {
-    if (external?.aborted === true) throw new UpstreamError(error)
+    if (externallyAborted()) throw new UpstreamError(error)
     if (error instanceof DeadlineError || controller.signal.aborted) throw new TimeoutError(ms)
     throw error
   } finally {

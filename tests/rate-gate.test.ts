@@ -22,7 +22,7 @@ async function withTemp(run_: (dir: string) => Promise<void>): Promise<void> {
   }
 }
 
-test('rate-gate：同域令牌桶——并发预约间隔 ≥ 0.8×interval（抖动下限）', async () => {
+test('rate-gate：同域令牌桶——并发预约间隔 ≥ interval（正抖动下限，不低于官方下限）', async () => {
   await withTemp(async (dir) => {
     const gate = new RateGate({
       ledgerPath: join(dir, 'ledger.json'),
@@ -33,7 +33,7 @@ test('rate-gate：同域令牌桶——并发预约间隔 ≥ 0.8×interval（�
     const slots = await Promise.all([1, 2, 3, 4, 5].map(() => gate.acquire('a.test', t0)))
     const ats = slots.map(s => s.at).sort((a, b) => a - b)
     for (let i = 1; i < ats.length; i++) {
-      assert.ok(ats[i]! - ats[i - 1]! >= 80, `slot ${i} spacing ${ats[i]! - ats[i - 1]!} < 80`)
+      assert.ok(ats[i]! - ats[i - 1]! >= 100, `slot ${i} spacing ${ats[i]! - ats[i - 1]!} < 100`)
     }
     // 跨域不受影响
     const other = await gate.acquire('b.test', t0)
@@ -80,6 +80,59 @@ test('rate-gate：账本持久化 + 换实例读取（跨进程语义的进程�
     const gate2 = new RateGate({ ledgerPath: path, intervalsOverride: { 'a.test': 500 }, sleepFn: async () => {} })
     const second = await gate2.acquire('a.test', t0 + 10)
     assert.ok(second.waitedMs >= 390, `cross-instance waited ${second.waitedMs} < 390`)
+  })
+})
+
+test('rate-gate：跨实例——A 装载旧账本后 B 推后账本，A 再 acquire 必须看到 B 的预约', async () => {
+  await withTemp(async (dir) => {
+    const path = join(dir, 'ledger.json')
+    const t0 = 1_000_000
+    const gateA = new RateGate({
+      ledgerPath: path,
+      intervalsOverride: { 'a.test': 1_000 },
+      sleepFn: async () => {}, // 只验预约序，不真睡
+    })
+    const first = await gateA.acquire('a.test', t0)
+    assert.equal(first.waitedMs, 0)
+
+    // B 以更晚的 now 抢到锁：账本被推到 t0+5000（旧实现 A 的缓存仍停在 t0）
+    const gateB = new RateGate({ ledgerPath: path, intervalsOverride: { 'a.test': 1_000 }, sleepFn: async () => {} })
+    const second = await gateB.acquire('a.test', t0 + 5_000)
+    assert.equal(second.waitedMs, 0)
+    assert.equal(second.at, t0 + 5_000)
+
+    // A 再 acquire：必须从磁盘看到 B 的预约 → 等待，且落点比 B 晚 ≥ interval
+    const third = await gateA.acquire('a.test', t0 + 5_500)
+    assert.ok(third.waitedMs > 0, `旧实现命中缓存会 0 等待（实际 ${third.waitedMs}）`)
+    assert.ok(third.at - second.at >= 1_000, `A 未看到 B 的预约：间距 ${third.at - second.at} < 1000`)
+  })
+})
+
+test('rate-gate：同一实例换 ledgerPath——换根从新账本开始，不继承旧根等待', async () => {
+  await withTemp(async (dir) => {
+    const t0 = 1_000_000
+    let current = join(dir, 'ledger-a.json')
+    const sleeps: number[] = []
+    const gate = new RateGate({
+      ledgerPath: () => current,
+      intervalsOverride: { 'a.test': 1_000 },
+      sleepFn: async (ms) => { sleeps.push(ms) },
+    })
+    // 根 A：把账本预约推到 t0+500,000（模拟该根下已有外部预约）
+    const seeded = await gate.acquire('a.test', t0 + 500_000)
+    assert.equal(seeded.waitedMs, 0)
+    // 换根 B：旧实现仍用缓存 A → 以 now=t0 再 acquire 会等待 ~500s
+    current = join(dir, 'ledger-b.json')
+    const fresh = await gate.acquire('a.test', t0)
+    assert.equal(fresh.waitedMs, 0, '换根后应从空账本开始，不继承根 A 的预约')
+    assert.equal(fresh.at, t0)
+    assert.deepEqual(sleeps, [])
+    // 换回根 A：同样重新读盘，看到的是 A 的预约（不是 B 的）
+    current = join(dir, 'ledger-a.json')
+    const back = await gate.acquire('a.test', t0 + 500_500)
+    assert.ok(back.waitedMs > 0, '换回根 A 应看到 A 的预约')
+    assert.ok(back.at - seeded.at >= 1_000, `换回根 A 未排在其预约之后：${back.at - seeded.at} < 1000`)
+    assert.equal(sleeps.length, 1)
   })
 })
 

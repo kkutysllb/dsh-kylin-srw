@@ -12,6 +12,12 @@ export interface CompileOutcome {
     readonly reran: number;
     readonly parsed: ParsedTeXLog;
     readonly durationMs: number;
+    /** 裸引擎引用工具结果（latexmk/tectonic 内部处理 bib，不填）。 */
+    readonly bib?: {
+        readonly tool: 'bibtex' | 'biber';
+        readonly bbl: boolean;
+        readonly undefinedCitations: number;
+    };
 }
 export declare function compilePaper(options: {
     engine: TeXEngine;
@@ -21,6 +27,8 @@ export declare function compilePaper(options: {
     /** 编译工作目录（paper/）。 */
     readonly cwd: string;
     readonly maxReruns?: number;
+    /** 引用工具：latexmk/tectonic 自带；裸 xelatex/pdflatex 需要显式跑 bibtex/biber。 */
+    readonly bibTool?: 'bibtex' | 'biber';
 }): Promise<CompileOutcome>;
 /** 编译失败但非零退出信息不友好时（假引擎/超时），把 message 包成结构化错误
  * 的兜底（run 抛错时 error.message 就是我们的日志替代品）。 */

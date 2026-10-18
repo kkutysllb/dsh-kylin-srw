@@ -31,7 +31,7 @@ export interface Outline {
   readonly sections: readonly OutlineSection[]
 }
 
-export function emptyOutline(sections: readonly { title: string; intent: string }[] = []): Outline {
+export function emptyOutline(sections: readonly { title: string; intent: string; file?: string }[] = []): Outline {
   return {
     schemaVersion: 1,
     status: 'draft',
@@ -42,6 +42,7 @@ export function emptyOutline(sections: readonly { title: string; intent: string 
       intent: section.intent,
       targetWords: 400,
       status: 'draft' as const,
+      ...(section.file !== undefined ? { file: section.file } : {}),
     })),
   }
 }

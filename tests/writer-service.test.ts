@@ -4,13 +4,14 @@
 
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { resolve as pathResolve } from 'node:path'
-import { WriterService, type VenueInstance } from '../src/writer/service.ts'
+import { WriterService, type VenueInstance, type WriterDeps } from '../src/writer/service.ts'
 import type { RunPort } from '../src/writer/engine.ts'
 import { ServiceError } from '../src/service.ts'
+import { emptyOutline, serializeOutline } from '../src/writer/outline.ts'
 
 function fakeFs() {
   return {
@@ -28,6 +29,8 @@ function fakeFs() {
 function fakeEngine(): RunPort {
   return async (command, args, options) => {
     if (command !== 'tectonic') throw new Error(`spawn ${command} ENOENT`)
+    // 探测阶段只回版本号：不读写 cwd，避免单测把假 PDF 写进仓库根（历史脏产物来源）。
+    if (args.includes('--version')) return { stdout: 'tectonic 0.15.0-fake', stderr: '' }
     const { readdir } = await import('node:fs/promises')
     const texFiles: string[] = []
     const main = await readFile(join(options.cwd, 'main.tex'), 'utf8').catch(() => '')
@@ -51,10 +54,16 @@ function fakeEngine(): RunPort {
       const long = `! Undefined control sequence.\n${explain}\n ned indeed\nl.${brokenLine} \\brokenmacro`
       throw new Error(`exit 1\n${long}`)
     }
-    await mkdir(join(options.cwd, 'build'), { recursive: true })
-    await writeFile(join(options.cwd, 'build', 'main.pdf'), Buffer.from('%PDF-1.4 fake output'))
-    await writeFile(join(options.cwd, 'build', 'main.log'), 'Output written on main.pdf (6 pages, 12345 bytes).')
-    return { stdout: 'Compiling main.tex → build/main.pdf', stderr: '' }
+    // 真实引擎按命令行 outdir 落产物（tectonic --outdir / latexmk -outdir= /
+    // xelatex -output-directory=）；假引擎也照这个语义写，才能钉住 P1-1 回归。
+    const outIndex = args.indexOf('--outdir')
+    const eqArg = args.find(arg => arg.startsWith('-outdir=') || arg.startsWith('-output-directory='))
+    const outDir = outIndex >= 0 ? (args[outIndex + 1] ?? 'build') : (eqArg?.split('=')[1] ?? 'build')
+    const outputDir = join(options.cwd, outDir)
+    await mkdir(outputDir, { recursive: true })
+    await writeFile(join(outputDir, 'main.pdf'), Buffer.from('%PDF-1.4 fake output'))
+    await writeFile(join(outputDir, 'main.log'), 'Output written on main.pdf (6 pages, 12345 bytes).')
+    return { stdout: `Compiling main.tex → ${outDir}/main.pdf`, stderr: '' }
   }
 }
 
@@ -107,6 +116,13 @@ test('writer 全链：venue 应用 → 骨架 → 大纲 G1 → 确认 → 节�
     assert.ok(saved.sections.every(section => section.file !== undefined))
     // 同名节沿用旧文件
     assert.equal(saved.sections[0]?.file, 'sections/01-introduction.tex')
+    // 大纲改名后 main.tex 的 \input 必须同步；旧节文件进 _orphaned（不再编译）
+    const mainAfterSave = await readFile(join(root, 'demo', 'paper', 'main.tex'), 'utf8')
+    assert.ok(mainAfterSave.includes('\\input{sections/01-introduction} % Introduction'))
+    assert.ok(mainAfterSave.includes('\\input{sections/03-method} % Method'))
+    assert.ok(!mainAfterSave.includes('02-related-work'), '旧节不再出现在输入清单')
+    const orphaned = await readdir(join(root, 'demo', 'paper', 'sections', '_orphaned'))
+    assert.ok(orphaned.includes('02-related-work.tex'), '旧节文件移入 _orphaned')
 
     const confirmed = await service.outlineConfirm('demo')
     assert.equal(confirmed.status, 'confirmed')
@@ -128,10 +144,21 @@ test('writer 全链：venue 应用 → 骨架 → 大纲 G1 → 确认 → 节�
     assert.equal(okRun.pdfWritten, true)
     assert.ok(okRun.snapshot !== undefined)
 
-    // 改坏现场 → 回滚 → 内容复原
+    // 快照必须带上「真实落点 PDF + 大纲/venue 状态」：只回滚 tex 会造成状态撕裂。
+    const manifest = JSON.parse(await readFile(join(root, 'demo', 'paper', 'snapshots', okRun.snapshot!.id, 'manifest.json'), 'utf8')) as { files: Record<string, string> }
+    assert.ok(manifest.files['build/main.pdf'] !== undefined, '快照含 build/main.pdf')
+    assert.ok(manifest.files['state/outline.json'] !== undefined, '快照含 outline 状态')
+    assert.ok(manifest.files['state/venue.json'] !== undefined, '快照含 venue 状态')
+
+    // 改坏现场（改节 + 改大纲）→ 回滚 → tex 与 .srw 状态都复原
     await service.sectionWrite('demo', 's1', '\\section{Wrecked}\n')
+    await service.outlineSave('demo', [{ title: 'Wrecked Section', intent: '回滚测试', targetWords: 100 }])
     await service.snapshotRestore('demo', okRun.snapshot!.id)
     assert.equal(await readFile(join(root, 'demo', 'paper', 'sections', '01-introduction.tex'), 'utf8'), '\\section{Introduction}\nAll good now.\n')
+    const restoredOutline = JSON.parse(await readFile(join(root, 'demo', '.srw', 'outline.json'), 'utf8')) as { status: string; sections: Array<{ title: string; file?: string }> }
+    assert.equal(restoredOutline.status, 'confirmed', '回滚恢复 outline 状态')
+    assert.equal(restoredOutline.sections[0]?.title, 'Introduction')
+    assert.equal(restoredOutline.sections[0]?.file, 'sections/01-introduction.tex')
 
     const state = await service.state('demo')
     assert.equal(state.venue?.venueId, 'ieee-journal')
@@ -183,6 +210,32 @@ test('writer：合规检查从盘上事实计算（sections/figures/tables/refs/
     assert.equal(refs?.actual, '0 条')
     assert.ok(result.checks.some(check => check.id.startsWith('section.')))
     void root
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('writer：run 缺失在构造期抛 NO_PROVIDER（不伪装成引擎缺失）', () => {
+  assert.throws(
+    () => new WriterService({ fs: fakeFs(), rootDir: () => '/tmp' } as unknown as WriterDeps),
+    (error: unknown) => error instanceof ServiceError && error.code === 'NO_PROVIDER',
+  )
+})
+
+test('writer：旧大纲缺 file 自动迁移绑定（confirm 不再可确认但不可写）', async () => {
+  const { service, root } = await makeService()
+  try {
+    await service.venueApply('demo', 'ieee-journal')
+    await mkdir(join(root, 'demo', '.srw'), { recursive: true })
+    await writeFile(join(root, 'demo', '.srw', 'outline.json'), serializeOutline(emptyOutline([
+      { title: 'Introduction', intent: '旧项目没有绑定文件' },
+    ])))
+    const confirmed = await service.outlineConfirm('demo')
+    assert.equal(confirmed.status, 'confirmed')
+    assert.ok(confirmed.sections.every(section => section.file !== undefined))
+    // 迁移后正文写入不再是死路
+    const written = await service.sectionWrite('demo', 's1', '\\section{Introduction}\nMigrated.\n')
+    assert.equal(written.file, 'sections/01-introduction.tex')
   } finally {
     await rm(root, { recursive: true, force: true })
   }

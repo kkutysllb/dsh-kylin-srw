@@ -116,6 +116,7 @@ test('engine：探测命中序 + 全缺不炸（ENGINE_MISSING 是数据不是�
 })
 
 test('engine：编译命令装配', () => {
-  assert.deepEqual(compileCommand('tectonic', 'main.tex'), { command: 'tectonic', args: ['main.tex'] })
+  assert.deepEqual(compileCommand('tectonic', 'main.tex'), { command: 'tectonic', args: ['--outdir', 'build', 'main.tex'] })
   assert.equal(compileCommand('latexmk', 'main.tex').args.includes('-interaction=nonstopmode'), true)
+  assert.equal(compileCommand('latexmk', 'main.tex').args.includes('-outdir=build'), true)
 })

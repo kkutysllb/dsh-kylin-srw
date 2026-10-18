@@ -23,5 +23,13 @@ export interface SnapshotInfo {
     readonly files: number;
 }
 export declare function listSnapshots(paperDir: string): Promise<readonly SnapshotInfo[]>;
-/** 回滚：逐文件哈希比对 manifest；覆盖当前 paper/。返回恢复的文件清单。 */
-export declare function restoreSnapshot(paperDir: string, id: string): Promise<readonly string[]>;
+/** 快照允许回滚的路径白名单：manifest 是磁盘上的普通 JSON，可能被手改/注入，
+ * 只认这些形状，任何 ../、绝对路径、未知文件一律 FORBIDDEN（不是静默跳过）。 */
+export declare function isSnapshotPathAllowed(path: string): boolean;
+export interface RestoreSnapshotOptions {
+    /** 宿主 containment 护栏（服务层传入）；直接调用 snapshot 模块的测试可省。 */
+    readonly guard?: (rel: string) => Promise<void>;
+}
+/** 回滚：逐文件哈希比对 manifest；覆盖当前 paper/（state/* 写回项目 .srw/）。
+ * 返回恢复的文件清单。 */
+export declare function restoreSnapshot(paperDir: string, id: string, options?: RestoreSnapshotOptions): Promise<readonly string[]>;

@@ -15,6 +15,10 @@ import { attachLiterature, type LiteratureService } from './literature/service.t
 import { attachWatch, type WatchManager } from './watch/binding.ts'
 import { type LlmPort, ReadingService } from './reading/service.ts'
 import { WriterService } from './writer/service.ts'
+import { PatentService } from './patent/service.ts'
+import { ComputeService } from './compute/service.ts'
+import { MaterialsService } from './materials/service.ts'
+import { nodeRun } from './writer/run.ts'
 /** 与 package.json 同步维护；diag.caps 的 info.version 数据源。 */
 export const SRW_VERSION = '0.0.1'
 
@@ -118,11 +122,56 @@ export class SrwService {
       this.writerRef = new WriterService({
         fs: (this.ctx as { fs?: SrwFsLike }).fs,
         rootDir: () => this.currentRoot(),
+        // 生产装配必须给真实 runner：缺了它 probeEngines 会把「端口未装配」
+        // 吞成「引擎不可用」，M5 的编译在真实宿主永远 ENGINE_MISSING。
+        run: nodeRun,
         libraryEntry: async (project, key) => await this.literature.entry(project, key),
       })
     }
     return this.writerRef
   }
+
+  private materialsRef: MaterialsService | undefined
+  /** 素材与证明链（M6：确定性生成/复算/插入门/数字宏）。纯本地 IO + 纯函数
+   * 渲染，无进程/LLM 端口——路径护栏 fail-closed（fs 注入），照 patent getter。 */
+  get materials(): MaterialsService {
+    if (this.materialsRef === undefined) {
+      this.materialsRef = new MaterialsService({
+        fs: (this.ctx as { fs?: SrwFsLike }).fs,
+        rootDir: () => this.currentRoot(),
+      })
+    }
+    return this.materialsRef
+  }
+
+  private patentRef: PatentService | undefined
+  /** 专利域（M9-lite：档案/交底书/公开事件/公开时序门）。纯本地 IO + 纯函数门，
+   * 无进程/LLM 端口——路径护栏 fail-closed（fs 注入）。 */
+  get patent(): PatentService {
+    if (this.patentRef === undefined) {
+      this.patentRef = new PatentService({
+        fs: (this.ctx as { fs?: SrwFsLike }).fs,
+        rootDir: () => this.currentRoot(),
+      })
+    }
+    return this.patentRef
+  }
+
+  private experimentRef: ComputeService | undefined
+  /** 实验与算力域（M7：单主机 submit/生命周期/日志/归集/claims 对账/gaps）。
+   * provider 缺省走真实 ssh 三级链（①cm/③direct），测试可注入 fake——
+   * 地址/凭据只经 compute 内部内存面，绝不落盘。 */
+  get experiment(): ComputeService {
+    if (this.experimentRef === undefined) {
+      this.experimentRef = new ComputeService({
+        fs: (this.ctx as { fs?: SrwFsLike }).fs,
+        rootDir: () => this.currentRoot(),
+        offline: () => this.config.offlineMode === true,
+      })
+    }
+    return this.experimentRef
+  }
+
 
   static async open(ctx: unknown, rawConfig: SrwConfig): Promise<SrwService> {
     const config: SrwConfig = {

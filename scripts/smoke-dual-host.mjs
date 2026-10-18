@@ -58,7 +58,10 @@ async function main() {
   if (!build.ok) process.exit(1)
 
   const stageDir = mkdtempSync(join(tmpdir(), 'srw-dual-'))
-  const pack = runCapture('npm pack', 'npm', ['pack', '--pack-destination', stageDir], repoRoot)
+  // --cache 指向本次临时目录：不能依赖用户级 ~/.npm——被沙箱/CI 限制写家目录时
+  // npm 会以「sudo chown ~/.npm」这类与真实原因无关的文案失败（2026-10-09 实测）。
+  const pack = runCapture('npm pack', 'npm',
+    ['pack', '--pack-destination', stageDir, '--cache', join(stageDir, 'npm-cache')], repoRoot)
   const tarballs = existsSync(stageDir)
     ? readdirSync(stageDir).filter(name => name.startsWith('dsh-kylin-srw-') && name.endsWith('.tgz'))
     : []

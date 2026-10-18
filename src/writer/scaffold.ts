@@ -11,6 +11,63 @@ export interface ScaffoldPlan {
   readonly sections: readonly string[]
 }
 
+/** main.tex 的输入清单标记：outline.save/confirm 与 compile 都按这对标记
+ * 重写同一段，避免「大纲改名、正文写进不被编译的文件」静默丢节。 */
+export const INPUT_BEGIN = '% srw:inputs:begin'
+export const INPUT_END = '% srw:inputs:end'
+
+/** 章节文件相对路径的合法形状（防大纲里写入 ../ 或绝对路径）。 */
+export function isSafeSectionFile(file: string): boolean {
+  return /^sections\/[A-Za-z0-9._-]+\.tex$/.test(file)
+}
+
+/** 把 \input 里的路径归一成相对 .tex（sections/01-intro → sections/01-intro.tex）。 */
+export function normalizeInputPath(raw: string): string {
+  const trimmed = raw.trim().replace(/\\/g, '/')
+  return trimmed.endsWith('.tex') ? trimmed : trimmed + '.tex'
+}
+
+/** 从 main.tex 提取 sections/ 输入清单（保持出现顺序）。 */
+export function sectionInputPaths(mainTex: string): string[] {
+  const paths: string[] = []
+  for (const match of mainTex.matchAll(/^\s*\\input\{([^}]+)\}/gm)) {
+    const path = normalizeInputPath(match[1] ?? '')
+    if (path.startsWith('sections/')) paths.push(path)
+  }
+  return paths
+}
+
+/** 用大纲的章节文件重写 main.tex 的输入清单。
+ * 新项目走标记块；旧项目（无标记）替换第一段连续的 \input{sections/…}；
+ * 都没有则插到 \bibliographystyle/\bibliography 之前（最后退 \end{document}）。 */
+export function syncInputBlock(mainTex: string, sections: readonly { readonly title: string; readonly file: string }[]): string {
+  const block = [
+    INPUT_BEGIN,
+    ...sections.map(section => '\\input{' + section.file.replace(/\.tex$/, '') + '} % ' + section.title.replace(/\s+/g, ' ')),
+    INPUT_END,
+  ].join('\n')
+  const begin = mainTex.indexOf(INPUT_BEGIN)
+  const end = mainTex.indexOf(INPUT_END)
+  if (begin >= 0 && end > begin) {
+    return mainTex.slice(0, begin) + block + mainTex.slice(end + INPUT_END.length)
+  }
+  const lines = mainTex.split('\n')
+  const isInput = (line: string): boolean => /^\s*\\input\{sections\/[^}]+\}/.test(line)
+  const first = lines.findIndex(isInput)
+  if (first >= 0) {
+    let last = first
+    while (last + 1 < lines.length && isInput(lines[last + 1] ?? '')) last += 1
+    lines.splice(first, last - first + 1, ...block.split('\n'))
+    return lines.join('\n')
+  }
+  const anchor = lines.findIndex(line => /^\s*\\(bibliographystyle|bibliography)\b/.test(line))
+  const at = anchor >= 0 ? anchor : lines.findIndex(line => /^\s*\\end\{document\}/.test(line))
+  if (at < 0) return mainTex.trimEnd() + '\n\n' + block + '\n'
+  lines.splice(at, 0, ...block.split('\n'), '')
+  return lines.join('\n')
+}
+
+
 const PLACEHOLDER_TITLES: Readonly<Record<string, string>> = {
   Introduction: 'Introduction',
   'Related Work': 'Related Work',
@@ -67,7 +124,9 @@ export function renderScaffold(input: {
     input.abstract !== undefined ? escapeLatex(input.abstract) : `% 摘要（≤${venue.abstractWords ?? 250} 词）`,
     `\\end{abstract}`,
     '',
+    INPUT_BEGIN,
     ...venue.sectionOrder.map((title, index) => `\\input{sections/${slugifySection(title, index)}} % ${title}`),
+    INPUT_END,
     '',
     `\\bibliographystyle{${venue.bibStyle}}`,
     `\\bibliography{refs}`,

@@ -8,16 +8,21 @@
 
 import { ServiceError, type SrwService } from './service.ts'
 import type { ProjectMeta } from './core/schema.ts'
+import type { PatentMeta } from './patent/types.ts'
+import type { ArtifactKind, Provenance } from './materials/types.ts'
 import type { LitCandidate } from './literature/types.ts'
 import { UNTRANSLATED_KINDS } from './reading/extract.ts'
 
 export const SRW_TOOL_NAME = 'srw_project'
+export const SRW_EXPERIMENT_TOOL_NAME = 'srw_experiment'
 export const SRW_LIT_TOOL_NAME = 'srw_literature'
 export const SRW_WATCH_TOOL_NAME = 'srw_watch'
+export const SRW_PATENT_TOOL_NAME = 'srw_patent'
+export const SRW_MATERIALS_TOOL_NAME = 'srw_materials'
 
 /** 需要人工审批的动作（list/open/lib/search/bibtex 豁免）。 */
 export const SRW_ASK_ACTIONS: ReadonlySet<string> = new Set(['create', 'remove'])
-export const SRW_LIT_ASK_ACTIONS: ReadonlySet<string> = new Set(['import', 'pdf'])
+export const SRW_LIT_ASK_ACTIONS: ReadonlySet<string> = new Set(['import', 'pdf', 'fulltext'])
 
 /** 调用者身份（照 automation callerFrom：从 pre-execute/execute 的 exec 提取）。 */
 export interface ToolCaller {
@@ -78,6 +83,13 @@ const TOOL_ASKS: ReadonlyMap<string, ReadonlyMap<string, ApprovalAsk>> = new Map
         zh: '此操作将从白名单学术源下载 PDF 到项目目录。',
       },
     }],
+    ['fulltext', {
+      reason: 'This resolves an OA copy via Unpaywall/publisher links, downloads it to the project, and records fulltext evidence (network egress + disk write).',
+      displayReason: {
+        en: 'This resolves an open-access full text (Unpaywall or publisher OA link), verifies it is a PDF, and writes it with provenance into the project.',
+        zh: '此操作将通过 Unpaywall/出版商 OA 链接解析开放获取全文，校验 PDF 魔数后落盘并记录全文证据。',
+      },
+    }],
   ])],
 ])
 
@@ -100,11 +112,62 @@ const WATCH_ASKS: ReadonlyMap<string, ApprovalAsk> = new Map([
   }],
 ])
 
+/** srw_patent 的 ask 动作：create 建专利档案目录要问；其余动作豁免
+ * （交底书/事件是项目域内草稿 IO，publication.check 是纯读计算）。 */
+const PATENT_ASKS: ReadonlyMap<string, ApprovalAsk> = new Map([
+  ['create', {
+    reason: 'This creates a new patent record directory (.srw/patent/<patentId>/ with patent.json and events.jsonl) inside the project.',
+    displayReason: {
+      en: 'This creates a new patent record directory inside the project (patent.json + append-only events.jsonl).',
+      zh: '此操作将在项目内创建新的专利档案目录（patent.json + 只增事件流水 events.jsonl）。',
+    },
+  }],
+])
+
+/** srw_materials 的 ask 动作：insert 写论文正文要问；其余豁免——
+ * generate/verify/numbers 是项目域内确定性 IO（materials/、experiments/
+ * manual/、paper/generated/），metrics.import 是补数据通道（M7 未开工时
+ * 用户手工导数入库，写 experiments/manual/）。 */
+const MATERIALS_ASKS: ReadonlyMap<string, ApprovalAsk> = new Map([
+  ['insert', {
+    reason: 'This writes a generated artifact into the paper: copies the .tex into paper/figs/ and appends an \\input line to a section file.',
+    displayReason: {
+      en: 'This inserts a generated artifact into the paper body (copies the .tex into paper/figs/ and appends \\input to a section file).',
+      zh: '此操作将把生成的素材插入论文正文：复制 .tex 到 paper/figs/ 并在节文件末尾追加 \\input。',
+    },
+  }],
+])
+
+/** srw_experiment 的 ask 动作：submit 会在远端 GPU 主机上执行用户代码
+ * （本插件风险最高的动作），cancel 会杀远端进程组——两者必须人工确认；
+ * hosts/env/status/logs/collect/claims.check/gaps.list/dataset.register
+ * 是只读或项目域内 IO，豁免（与 00 §8.2「IO 工具豁免、门在服务层」一致）。
+ * spec 确认门与 D 档门在 compute/service.submit 里硬编码（GATE）。 */
+const EXPERIMENT_ASKS: ReadonlyMap<string, ApprovalAsk> = new Map([
+  ['submit', {
+    reason: 'This uploads code and launches a job on the remote GPU host (remote code execution via SSH); the spec gate and depth-tier gate have already run at the service layer.',
+    displayReason: {
+      en: 'This uploads the code snapshot and launches a job on the remote GPU host over SSH (remote code execution).',
+      zh: '此操作将通过 SSH 把代码快照上传到远程 GPU 主机并启动作业（远端代码执行）。',
+    },
+  }],
+  ['cancel', {
+    reason: 'This kills the remote job process group (SIGTERM then SIGKILL after a grace period) on the GPU host.',
+    displayReason: {
+      en: 'This kills the remote job process group on the GPU host (SIGTERM, then SIGKILL after a grace period).',
+      zh: '此操作将终止 GPU 主机上的远端作业进程组（先 SIGTERM，宽限后 SIGKILL）。',
+    },
+  }],
+])
+
 /** 全部工具的 ask 表（approvalDecision 统一查这里）。 */
 const ASK_TABLE: ReadonlyMap<string, ReadonlyMap<string, ApprovalAsk>> = new Map([
   [SRW_TOOL_NAME, ASKS],
   [SRW_LIT_TOOL_NAME, TOOL_ASKS.get(SRW_LIT_TOOL_NAME) ?? new Map()],
   [SRW_WATCH_TOOL_NAME, WATCH_ASKS],
+  [SRW_PATENT_TOOL_NAME, PATENT_ASKS],
+  [SRW_MATERIALS_TOOL_NAME, MATERIALS_ASKS],
+  [SRW_EXPERIMENT_TOOL_NAME, EXPERIMENT_ASKS],
 ])
 
 /** 纯函数审批判定（单测面）：非本插件工具 / 未挂载 / 非敏感动作 → undefined。 */
@@ -380,21 +443,37 @@ export function srwLiteratureToolDef(service: SrwService): SrwToolDef {
   return {
     name: SRW_LIT_TOOL_NAME,
     description: [
-      '文献通路（科研工作台）：search 三源检索（arxiv/openalex/crossref）；import 检索结果入项目库（需审批，自动去重+撤稿标红）；',
-      'pdf 下载条目 PDF 到项目 literature/pdf/（需审批，白名单源+SSRF 防护）；bibtex 导出项目库到 paper/refs.bib（撤稿条目跳过）。',
+      '文献通路（科研工作台）：search 三源检索（arxiv/openalex/crossref）；import 检索结果入项目库（需审批，自动去重+撤稿标红+DOI 校验）；',
+      'pdf 下载条目 PDF 到项目 literature/pdf/（需审批，白名单源+SSRF 防护）；fulltext 取开放获取全文（需审批：Unpaywall/条目 OA 链接 → 域确认 → PDF 魔数门 → 证据落盘；只取 OA，不绕付费墙）；',
+      'bibtex 导出项目库到 paper/refs.bib（撤稿条目跳过并返回 skippedRetracted）；verify 校验 DOI（失败 UNRESOLVED）；citeGate 引用门（撤稿硬阻断，unresolved 警告）；',
+      'migrate 身份迁移（默认 dry-run，apply=true 才写盘并备份）；plan.save/plan.run/plan.list/plan.replay 管理可重放检索计划（replay 离线只读本地结果）。',
       'import 前需要项目已存在（先用 srw_project create/open）；候选缺 authors/year 时入库自动从 arXiv 补全（离线退化原样）；科研总根未设置时提示用户在面板选择。',
     ].join(''),
     parameters: {
       type: 'object',
       properties: {
-        action: { type: 'string', enum: ['search', 'import', 'pdf', 'bibtex', 'lib'], description: '要执行的动作' },
+        action: {
+          type: 'string',
+          enum: ['search', 'import', 'pdf', 'fulltext', 'bibtex', 'lib', 'verify', 'citeGate', 'migrate', 'plan.save', 'plan.run', 'plan.list', 'plan.replay'],
+          description: '要执行的动作',
+        },
         source: { type: 'string', enum: ['arxiv', 'openalex', 'crossref'], description: 'search 的源' },
-        query: { type: 'string', description: 'search 检索词（可带 arXiv 字段前缀 ti:/au:/all:）' },
-        limit: { type: 'number', description: 'search 条数上限（≤50，缺省 20）' },
-        project: { type: 'string', description: '项目 slug（import/pdf/bibtex/lib 必填）' },
-        key: { type: 'string', description: '条目 key（pdf 必填，来自 lib）' },
-        keys: { type: 'array', items: { type: 'string' }, description: 'bibtex 的条目 key 子集（缺省全库）' },
+        query: { type: 'string', description: 'search 检索词（可带 arXiv 字段前缀 ti:/au:/all:）；plan.save 也可传对象 {text,filters}' },
+        limit: { type: 'number', description: 'search 条数上限（≤50，缺省 20）；plan.save 下同 perSourceLimit' },
+        project: { type: 'string', description: '项目 slug（import/pdf/fulltext/bibtex/lib/verify/citeGate/migrate/plan.* 必填）' },
+        key: { type: 'string', description: '条目 key（pdf/fulltext 必填，来自 lib）' },
+        keys: { type: 'array', items: { type: 'string' }, description: 'bibtex 的条目 key 子集（缺省全库）/ citeGate 的待检 key' },
         items: { type: 'array', description: 'import 的候选条目（来自 search 的原始条目）' },
+        doi: { type: 'string', description: 'fulltext/verify 的 DOI（fulltext 下 key 与 doi 至少给一个）' },
+        allowHost: { type: 'string', description: 'fulltext 可选：显式确认的 PDF 主机（会写回 root.json fulltext.confirmedHosts）' },
+        planId: { type: 'string', description: 'plan.run/plan.replay 的计划 id（来自 plan.save/plan.list）' },
+        text: { type: 'string', description: 'plan.save 的检索式文本' },
+        filters: { type: 'object', description: 'plan.save 的过滤 {yearFrom,yearTo,source[]}' },
+        sources: { type: 'array', items: { type: 'string' }, description: 'plan.save 的源列表（缺省三源）' },
+        perSourceLimit: { type: 'number', description: 'plan.save 的每源条数上限（1..50，缺省 20）' },
+        sort: { type: 'string', enum: ['relevance', 'citations', 'year'], description: 'plan.save 的源内排序偏好' },
+        runId: { type: 'string', description: 'plan.replay 可选：指定历史 run（缺省最新）' },
+        apply: { type: 'boolean', description: 'migrate：false/缺省 dry-run；true 才写盘（写前备份 library.json.bak）' },
       },
       required: ['action'],
     },
@@ -436,13 +515,90 @@ export function srwLiteratureToolDef(service: SrwService): SrwToolDef {
             const result = await lit().fetchPdf(String(record['project'] ?? ''), String(record['key'] ?? ''))
             return { ok: true, value: { ...result, hint: '已回填条目 pdf 字段；面板可见 has-pdf 徽章' } }
           }
+          case 'fulltext': {
+            const key = typeof record['key'] === 'string' && record['key'] !== '' ? record['key'] : undefined
+            const doi = typeof record['doi'] === 'string' && record['doi'] !== '' ? record['doi'] : undefined
+            const allowHost = typeof record['allowHost'] === 'string' && record['allowHost'] !== '' ? record['allowHost'] : undefined
+            const result = await lit().fulltext(String(record['project'] ?? ''), {
+              ...(key === undefined ? {} : { key }),
+              ...(doi === undefined ? {} : { doi }),
+              ...(allowHost === undefined ? {} : { allowHost }),
+            })
+            return {
+              ok: true,
+              value: {
+                ...result,
+                hint: '已落盘 PDF + literature/fulltext 证据；失败分型 PAYWALLED/HOST_NOT_ALLOWED/CONTENT_NOT_PDF/UNRESOLVED/SSRF_BLOCKED（HOST_NOT_ALLOWED 时把提示的主机作为 allowHost 重试）',
+              },
+            }
+          }
           case 'bibtex': {
             const keys = Array.isArray(record['keys']) ? record['keys'].filter((k): k is string => typeof k === 'string') : undefined
             const result = await lit().bibtex(String(record['project'] ?? ''), keys)
-            return { ok: true, value: { ...result, path: 'paper/refs.bib' } }
+            return { ok: true, value: { ...result, path: 'paper/refs.bib', hint: 'skippedRetracted=撤稿条目已跳过（硬门）' } }
+          }
+          case 'verify': {
+            const result = await lit().verifyDoi(String(record['doi'] ?? ''))
+            return { ok: true, value: result }
+          }
+          case 'citeGate': {
+            const keys = Array.isArray(record['keys']) ? record['keys'].filter((k): k is string => typeof k === 'string') : undefined
+            const result = await lit().citeGate(String(record['project'] ?? ''), keys)
+            return { ok: true, value: { ...result, hint: 'blocked=撤稿硬阻断；warnings=DOI 未核验（不阻断但需先 verify）' } }
+          }
+          case 'migrate': {
+            const result = await lit().migrate(String(record['project'] ?? ''), record['apply'] === true)
+            return {
+              ok: true,
+              value: {
+                ...result,
+                hint: result.dryRun ? 'dry-run：报告将重命名/合并的条数，未写盘；确认后传 apply=true' : (result.applied ? '已写盘并备份 library.json.bak' : '无需迁移（已是最新键）'),
+              },
+            }
+          }
+          case 'plan.save': {
+            const payload: Record<string, unknown> = {
+              ...(typeof record['text'] === 'string' ? { text: record['text'] } : {}),
+              ...(record['query'] !== undefined ? { query: record['query'] } : {}),
+              ...(record['filters'] !== undefined ? { filters: record['filters'] } : {}),
+              ...(Array.isArray(record['sources']) ? { sources: record['sources'] } : {}),
+              ...(typeof record['perSourceLimit'] === 'number' ? { perSourceLimit: record['perSourceLimit'] } : {}),
+              ...(typeof record['limit'] === 'number' ? { limit: record['limit'] } : {}),
+              ...(typeof record['sort'] === 'string' ? { sort: record['sort'] } : {}),
+              ...(typeof record['planId'] === 'string' ? { planId: record['planId'] } : {}),
+            }
+            const plan = await lit().planSave(String(record['project'] ?? ''), payload)
+            return { ok: true, value: { ...plan, hint: '计划已保存（不触网）；action=plan.run 执行三源检索' } }
+          }
+          case 'plan.run': {
+            const result = await lit().planRun(String(record['project'] ?? ''), String(record['planId'] ?? ''))
+            return {
+              ok: true,
+              value: {
+                ...result,
+                hint: `运行完成：identified=${result.counts.identified} deduped=${result.counts.deduped} resultHash=${result.resultHash}；离线可用 action=plan.replay 复核`,
+              },
+            }
+          }
+          case 'plan.list': {
+            const plans = await lit().planList(String(record['project'] ?? ''))
+            return { ok: true, value: { count: plans.length, plans } }
+          }
+          case 'plan.replay': {
+            const runId = typeof record['runId'] === 'string' && record['runId'] !== '' ? record['runId'] : undefined
+            const result = await lit().planReplay(String(record['project'] ?? ''), String(record['planId'] ?? ''), runId)
+            return {
+              ok: true,
+              value: {
+                ...result,
+                hint: result.consistent
+                  ? `resultHash 一致（${result.keyCount} 条）；diff.added=${result.diff.added.length} diff.removed=${result.diff.removed.length}`
+                  : `resultHash 不一致：文件可能被改动或旧版本生成（recomputed=${result.recomputedHash}）`,
+              },
+            }
           }
           default:
-            throw new ServiceError('INVALID', `action 必须是 search|import|pdf|bibtex|lib，收到 ${JSON.stringify(record['action'])}`)
+            throw new ServiceError('INVALID', `action 必须是 search|import|pdf|fulltext|bibtex|lib|verify|citeGate|migrate|plan.*，收到 ${JSON.stringify(record['action'])}`)
         }
       } catch (error) {
         return toolEnvelope(error)
@@ -514,6 +670,9 @@ export function srwPaperToolDef(service: SrwService): SrwToolDef {
         return { ...result, hint: '节已写入——全部节写完后 action=compile 编译' }
       }
       case 'compile': {
+        // M6 编译前门：插入副本被手改/缺失（ARTIFACT_DRIFT）→ 直接 GATE，不进编译
+        //（副本不一致时编出的 PDF 与证明链脱钩——先恢复副本再编译）。
+        await service.materials.checkInsertions(project)
         const outcome = await writer().compile(project)
         return {
           ok: outcome.ok,
@@ -700,6 +859,411 @@ export function srwReadToolDef(service: SrwService): SrwToolDef {
     },
     output: { schema: { type: 'object' }, render: jsonRender },
     timeoutMs: 300_000,
+    execute: async (args) => {
+      try {
+        return { ok: true, value: await run(args) }
+      } catch (error: unknown) {
+        return toolEnvelope(error)
+      }
+    },
+  }
+}
+
+/** 专利单行摘要（模型面向，有界；照 projectSummary 形状）。 */
+export function patentSummary(meta: PatentMeta): string {
+  return [`patentId=${meta.patentId}`, `title=${meta.title}`, `status=${meta.status}`, `updatedAt=${meta.updatedAt}`].join(' ')
+}
+
+/** `srw_patent` 工具（M9-lite）：专利档案 + 技术交底书 + 公开时序门。
+ * 审批：create 需人工 ask（建档案目录）；其余豁免——disclosure/event 是项目域
+ * 内草稿 IO（与 srw_paper 同款豁免），publication.check 是纯读计算。
+ * 红线进描述：先申请后公开，投稿/预印本/答辩/开源前必跑 publication.check。 */
+export function srwPatentToolDef(service: SrwService): SrwToolDef {
+  const patent = (): SrwService['patent'] => service.patent
+  const run = async (args: unknown): Promise<Record<string, unknown>> => {
+    const record = typeof args === 'object' && args !== null ? args as Record<string, unknown> : {}
+    const project = typeof record['project'] === 'string' ? record['project'] : ''
+    const patentId = typeof record['patentId'] === 'string' ? record['patentId'] : ''
+    switch (record['action']) {
+      case 'state': {
+        if (patentId !== '') {
+          const meta = await patent().get(project, patentId)
+          const disclosure = await patent().disclosureGet(project, patentId)
+          return { project, patentId, patent: meta, hasDisclosure: disclosure !== undefined }
+        }
+        const patents = await patent().list(project)
+        return { project, count: patents.length, patents: patents.map(patentSummary) }
+      }
+      case 'create': {
+        const title = typeof record['title'] === 'string' ? record['title'].trim() : ''
+        if (patentId === '') throw new ServiceError('INVALID', 'create 需要 patentId（档案 slug）')
+        if (title === '') throw new ServiceError('INVALID', 'create 需要 title（发明名称）')
+        const inventors = stringArrayArg(record['inventors'])
+        const applicants = stringArrayArg(record['applicants'])
+        const meta = await patent().create(project, {
+          patentId,
+          title,
+          ...(inventors.length > 0 ? { inventors } : {}),
+          ...(applicants.length > 0 ? { applicants } : {}),
+        })
+        return { created: patentSummary(meta), hint: '档案已建（status=idea）——下一步 action=disclosure.save 写技术交底书' }
+      }
+      case 'disclosure.get': {
+        const disclosure = await patent().disclosureGet(project, patentId)
+        return disclosure !== undefined
+          ? { status: 'saved', disclosure, hint: '交底书已保存——修改用 action=disclosure.save 整体替换' }
+          : { status: 'none', hint: '尚无交底书——按技术领域/背景技术/问题/方案/实施例/有益效果起草后 action=disclosure.save' }
+      }
+      case 'disclosure.save': {
+        const raw = record['disclosure']
+        if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+          throw new ServiceError('INVALID', 'disclosure.save 需要 disclosure 对象（technicalField/backgroundArt/problem/solution/embodiments/beneficialEffects）')
+        }
+        const saved = await patent().disclosureSave(project, patentId, raw)
+        return { saved, hint: '交底书已保存（整体替换）——公开事件盘点用 action=event.add，投稿前必跑 action=publication.check' }
+      }
+      case 'event.add': {
+        const raw = record['event']
+        if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+          throw new ServiceError('INVALID', 'event.add 需要 event 对象（kind/description/publicAt/graceCase）')
+        }
+        const event = await patent().eventAdd(project, patentId, raw)
+        return { event, hint: '事件已登记（append-only）——投稿/预印本/答辩/开源前 action=publication.check' }
+      }
+      case 'publication.check': {
+        const at = typeof record['publicationAt'] === 'string' && record['publicationAt'] !== '' ? record['publicationAt'] : undefined
+        const result = await patent().publicationCheck(
+          project,
+          patentId,
+          ...(at === undefined ? [] : [at] as const),
+        )
+        const hints: Record<string, string> = {
+          safe: '公开时序安全（本检查不构成法律意见）',
+          grace: '落入宽限期窗口——宽限期仅四种法定情形，须专利代理人确认适用',
+          risk: '存在新颖性风险——先申请、后公开',
+          blocked: '不可逆：公开在先且未申请——立即停止投稿并找专利代理人',
+        }
+        return { ...result, hint: hints[result.check.verdict] ?? '' }
+      }
+      default:
+        throw new ServiceError('INVALID', `未知 action：${JSON.stringify(record['action'])}`)
+    }
+  }
+  return {
+    name: SRW_PATENT_TOOL_NAME,
+    description: [
+      '专利线执行面（科研工作台，M9-lite）：state 查档案；create 立项（需审批）；',
+      'disclosure.get / disclosure.save 技术交底书（问题-方案-效果-实施例，整体替换）；',
+      'event.add 登记公开事件（论文投稿/预印本/会议/学位论文/开源，append-only）；',
+      'publication.check 公开时序门——任何投稿、预印本上传、会议报告、学位论文提交、开源之前必查。',
+      '纪律：先申请、后公开；交底书内容由你自己起草（不编造对比文件与实验数据，无证据的效益标 TODO）；',
+      '检查结果不构成法律意见，grace/risk/blocked 都要如实告知用户。检索/形式检查/导出未做。',
+    ].join(''),
+    parameters: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['state', 'create', 'disclosure.get', 'disclosure.save', 'event.add', 'publication.check'], description: '要执行的动作' },
+        project: { type: 'string', description: '项目 slug' },
+        patentId: { type: 'string', description: '专利档案 id（create/state/disclosure/event/check 必填；^[a-z0-9][a-z0-9-]{0,63}$）' },
+        title: { type: 'string', description: 'create 必填：发明名称（≤200 字）' },
+        inventors: { type: 'array', items: { type: 'string' }, description: 'create 可选：发明人姓名列表' },
+        applicants: { type: 'array', items: { type: 'string' }, description: 'create 可选：申请人（单位）名称列表' },
+        disclosure: { type: 'object', description: 'disclosure.save 必填：交底书对象' },
+        event: { type: 'object', description: 'event.add 必填：{kind, description, publicAt, graceCase?, source?}' },
+        publicationAt: { type: 'string', description: 'publication.check 可选：计划公开时点（ISO，缺省现在）' },
+      },
+      required: ['action'],
+    },
+    output: { schema: { type: 'object' }, render: jsonRender },
+    timeoutMs: 15_000,
+    execute: async (args) => {
+      try {
+        return { ok: true, value: await run(args) }
+      } catch (error: unknown) {
+        return toolEnvelope(error)
+      }
+    },
+  }
+}
+
+/** 工具入参的字符串数组宽容提取（非法元素静默过滤，服务层再校验）。 */
+function stringArrayArg(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string' && item !== '') : []
+}
+
+/** srw_materials 工具（M6 素材与证明链）：metrics.import 导入手工实验数据；
+ * generate 由 spec+metrics 确定性渲染五类素材；verify 复算（重渲染比对哈希）；
+ * insert 过 G-M1 溯源门插进正文（需审批）；remove 撤销插入；numbers 生成
+ * 数字宏表；numbers.audit 审计未溯源裸数字。红线：无 metrics 不生成、不编造、
+ * mismatch 阻断、illustrative 默认拒绝、公式恒「未验证」须脚注。 */
+export function srwMaterialsToolDef(service: SrwService): SrwToolDef {
+  const materials = (): SrwService['materials'] => service.materials
+  const run = async (args: unknown): Promise<Record<string, unknown>> => {
+    const record = typeof args === 'object' && args !== null ? args as Record<string, unknown> : {}
+    const project = typeof record['project'] === 'string' ? record['project'] : ''
+    switch (record['action']) {
+      case 'list': {
+        const manifest = await materials().manifest(project)
+        return {
+          schemaVersion: manifest.schemaVersion,
+          count: manifest.artifacts.length,
+          artifacts: manifest.artifacts.map(artifact => ({
+            id: artifact.id,
+            kind: artifact.kind,
+            provenance: artifact.provenance,
+            path: artifact.path,
+            status: artifact.verification.status,
+            method: artifact.verification.method,
+            detail: artifact.verification.detail,
+            inputs: artifact.inputs.length,
+            inserted: artifact.insertedAt.length,
+            illustrativeAllowed: artifact.illustrative.allowed,
+          })),
+          hint: 'generate 造素材（spec + metrics）→ verify 复算 → insert 插入正文 → numbers 出数字宏',
+        }
+      }
+      case 'generate': {
+        const kind = typeof record['kind'] === 'string' ? record['kind'] : ''
+        const provenance = typeof record['provenance'] === 'string' ? record['provenance'] : ''
+        const spec = record['spec']
+        if (typeof spec !== 'object' || spec === null || Array.isArray(spec)) {
+          throw new ServiceError('INVALID', 'generate 需要 spec 对象（kind 特定参数：table 列 / plot series / steps / latex / code）')
+        }
+        const entry = await materials().generate(project, {
+          id: typeof record['id'] === 'string' ? record['id'] : '',
+          kind: kind as ArtifactKind,
+          provenance: provenance as Provenance,
+          spec: spec as Record<string, unknown>,
+          ...(record['allowIllustrative'] === true ? { allowIllustrative: true } : {}),
+        })
+        return {
+          id: entry.id,
+          kind: entry.kind,
+          provenance: entry.provenance,
+          path: entry.path,
+          status: entry.verification.status,
+          detail: entry.verification.detail,
+          outputSha256: entry.output.sha256,
+          bytes: entry.output.bytes,
+          inputCount: entry.inputs.length,
+          hint: 'action=verify 复算通过后再 insert；表/图数字沿 inputs→metrics 可回指',
+        }
+      }
+      case 'verify': {
+        const entry = await materials().verify(project, typeof record['id'] === 'string' ? record['id'] : '')
+        return {
+          id: entry.id,
+          status: entry.verification.status,
+          method: entry.verification.method,
+          detail: entry.verification.detail,
+          checkedAt: entry.verification.checkedAt,
+          ...(entry.verification.status === 'mismatch'
+            ? { hint: '复算不一致：输入/产物/副本被改——恢复文件后重新 verify；不要改基线' }
+            : entry.verification.status === 'verified'
+              ? { hint: '复算一致——可 action=insert 插入正文' }
+              : { hint: 'unverifiable：可插入但论文须脚注「未验证」' }),
+        }
+      }
+      case 'insert': {
+        const result = await materials().insert(
+          project,
+          typeof record['id'] === 'string' ? record['id'] : '',
+          typeof record['sectionId'] === 'string' ? record['sectionId'] : '',
+        )
+        return {
+          id: result.artifact.id,
+          sectionId: result.inserted.sectionId,
+          file: result.inserted.file,
+          label: result.inserted.label,
+          target: result.inserted.target,
+          status: result.artifact.verification.status,
+          hint: '已在节末追加 \\input{figs/<id>}；正文引用用 \\ref{' + result.inserted.label + '}；compile 前会核对副本哈希',
+        }
+      }
+      case 'remove': {
+        const result = await materials().removeInserted(project, typeof record['id'] === 'string' ? record['id'] : '')
+        return { removed: true, removedFiles: result.removed, hint: '已删插入副本并清理节文件 \\input 行与 insertedAt' }
+      }
+      case 'metrics.import': {
+        const metrics = record['metrics']
+        if (typeof metrics !== 'object' || metrics === null || Array.isArray(metrics)) {
+          throw new ServiceError('INVALID', 'metrics.import 需要 metrics 对象（{ values: { 指标: { value, unit?, stderr?, n?, seed? } }, series?: [{ name, points }] }）')
+        }
+        const result = await materials().importMetrics(project, {
+          runId: typeof record['runId'] === 'string' ? record['runId'] : '',
+          metrics,
+        })
+        return { ...result, hint: '已写 experiments/manual/<runId>/metrics.json + run.json——generate 时 spec.runId 指向它' }
+      }
+      case 'numbers': {
+        const result = await materials().numbersGenerate(project)
+        return {
+          texPath: result.texPath,
+          jsonPath: result.jsonPath,
+          macroCount: result.macros.length,
+          macros: result.macros.map(macro => macro.name),
+          hint: 'main.tex 加 \\input{generated/srw-numbers} 后正文用 \\srw<Name> 引数字；数据变了重跑本动作再 compile',
+        }
+      }
+      case 'numbers.audit': {
+        const result = await materials().numbersAudit(project)
+        return {
+          count: result.count,
+          truncated: result.truncated,
+          findings: result.findings,
+          ...(result.count === 0
+            ? { hint: '无未溯源裸数字（或大纲未建）——D2/D3 投稿要求 0 条' }
+            : { hint: '把裸数字换成 \\srw<Name> 宏（action=numbers 先生成）或给出可回指出处' }),
+        }
+      }
+      default:
+        throw new ServiceError('INVALID', '未知 action：' + JSON.stringify(record['action']))
+    }
+  }
+  return {
+    name: SRW_MATERIALS_TOOL_NAME,
+    description: [
+      '素材生成与证明链（科研工作台）：metrics.import 把手工实验数据导入 experiments/manual/<runId>/；',
+      'generate 由 spec+metrics 确定性渲染五类素材（table 书籍表 / plot pgfplots 曲线 / pseudocode 伪代码 /',
+      'formula 公式 / tikz 示意图，同输入字节级同输出）；verify 复算（重渲染比对哈希，mismatch 阻断）；',
+      'insert 过溯源门把素材插进论文正文（需审批，节末 \\input + paper/figs 副本受哈希保护）；remove 撤销插入；',
+      'numbers 生成数字宏表（\\srw<Name>，正文数字必须用宏、可回指 metrics）；numbers.audit 列未溯源裸数字。',
+      '纪律：无 metrics 不生成、绝不编造数据；示意素材（provenance=illustrative）默认拒绝，显式开启也要',
+      '水印/脚注/红标三处标注；mismatch 未复绿前不许插入；compile 会先核对插入副本（ARTIFACT_DRIFT 即拦截）；',
+      '公式门（sympy）未接入，公式恒「未验证」，论文引用须脚注。素材内容由你按 spec 起草，工具只做确定性渲染。',
+    ].join(''),
+    parameters: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['list', 'generate', 'verify', 'insert', 'remove', 'metrics.import', 'numbers', 'numbers.audit'], description: '要执行的动作' },
+        project: { type: 'string', description: '项目 slug' },
+        id: { type: 'string', description: '素材 id（generate/verify/insert/remove 必填；^[a-z][a-z0-9-]{1,40}$，如 tab-main）' },
+        kind: { type: 'string', enum: ['table', 'plot', 'pseudocode', 'formula', 'tikz'], description: 'generate 必填：素材类型' },
+        provenance: { type: 'string', enum: ['measured', 'derived', 'literature', 'illustrative'], description: 'generate 必填：数据出身（illustrative 默认拒绝）' },
+        spec: { type: 'object', description: 'generate 必填：table{runId,columns:[{metric,header?,precision?}],title?,caption?}；plot{runId,seriesName,xLabel?,yLabel?,caption?}；pseudocode{steps:[...]}；formula{latex,caption?}；tikz{code,caption?}' },
+        allowIllustrative: { type: 'boolean', description: 'generate 可选：显式允许示意素材（默认拒绝；开启后须三处标注）' },
+        sectionId: { type: 'string', description: 'insert 必填：大纲节 id（如 s3）' },
+        runId: { type: 'string', description: 'metrics.import 必填：运行 id（^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$，用扁平名如 run-01）' },
+        metrics: { type: 'object', description: 'metrics.import 必填：{ values: { 指标: { value, unit?, stderr?, n?, seed? } }, series?: [{ name, xLabel?, yLabel?, points: [[x,y],...] }] }' },
+      },
+      required: ['action'],
+    },
+    output: { schema: { type: 'object' }, render: jsonRender },
+    timeoutMs: 15_000,
+    execute: async (args) => {
+      try {
+        return { ok: true, value: await run(args) }
+      } catch (error: unknown) {
+        return toolEnvelope(error)
+      }
+    },
+  }
+}
+
+/** srw_experiment 工具（M7 实验与算力 MVP，单主机）：hosts 盘点 GPU 主机
+ * （可达性 + 环境/GPU 快照，输出只含 hostRef+label）；submit 提交实验
+ * （需审批：spec 门 confirm + D 档缺口 ack + GPU 选卡 + setsid 脱离会话）；
+ * status/logs/collect 轮询 7 态/偏移续读日志/回传指标与产物（sha256 对账）；
+ * cancel 取消（需审批，进程组 TERM→KILL）；claims.check 论文数字对账；
+ * gaps.list 补数据缺口；dataset.register 数据集注册。 */
+export function srwExperimentToolDef(service: SrwService): SrwToolDef {
+  const exp = (): SrwService['experiment'] => service.experiment
+  const run = async (args: unknown): Promise<Record<string, unknown>> => {
+    const record = typeof args === 'object' && args !== null ? args as Record<string, unknown> : {}
+    const project = typeof record['project'] === 'string' ? record['project'] : ''
+    const expId = typeof record['expId'] === 'string' ? record['expId'] : ''
+    const runId = typeof record['runId'] === 'string' ? record['runId'] : ''
+    switch (record['action']) {
+      case 'hosts': {
+        const result = await exp().hosts(project, record['env'] === false ? { env: false } : {})
+        return { ...result, hint: 'submit 前先看 usable/reachable 与 env.gpuCount/nvcc；输出只有 hostRef+label（无地址/用户名/端口）' }
+      }
+      case 'submit': {
+        const spec = record['spec']
+        const result = await exp().submit(project, {
+          expId,
+          ...(spec === undefined ? {} : { spec }),
+          ...(Array.isArray(record['files']) ? { files: record['files'] as readonly unknown[] } : {}),
+          ...(typeof record['hostRef'] === 'string' && record['hostRef'] !== '' ? { hostRef: record['hostRef'] } : {}),
+          ...(typeof record['seed'] === 'number' ? { seed: record['seed'] } : {}),
+          ...(record['confirm'] === true ? { confirm: true } : {}),
+          ...(record['ack'] === true ? { ack: true } : {}),
+          ...(runId !== '' ? { runId } : {}),
+        })
+        return { ...result, hint: '作业已脱离会话（setsid）——action=status 轮询（≤10s 一次），logs 续读日志，collect 回传指标/产物' }
+      }
+      case 'status':
+        return { ...await exp().status(project, expId, runId === '' ? undefined : runId) }
+      case 'logs':
+        return { ...await exp().logs(project, expId, runId) }
+      case 'collect':
+        return { ...await exp().collect(project, expId, runId) }
+      case 'cancel': {
+        const result = await exp().cancel(project, expId, runId, typeof record['reason'] === 'string' ? record['reason'] : undefined)
+        return { ...result, hint: 'cancelled=进程组已消失；interrupted=取消时主机不可达（远端可能仍在跑，恢复后 status 重试）' }
+      }
+      case 'env.setup':
+        await exp().envSetup()
+        return { ok: true }
+      case 'claims.check': {
+        const result = await exp().claimsCheck(project, {
+          ...(expId !== '' ? { expId } : {}),
+          ...(record['claim'] === undefined ? {} : { claim: record['claim'] }),
+          ...(typeof record['id'] === 'string' && record['id'] !== '' ? { id: record['id'] } : {}),
+        })
+        return {
+          ...result,
+          hint: 'verified=可引用；mismatch=改论文数字或查 metrics（阻断插入）；unverifiable=证据缺（脚注「未验证」或补跑）',
+        }
+      }
+      case 'gaps.list':
+        return { ...await exp().gapsList(project, expId), hint: '补数据补完 = P0/P1 为空；按 priority+estGpuHours 顺序排期（单主机串行、单卡并发 1）' }
+      case 'dataset.register': {
+        const dataset = record['dataset']
+        if (typeof dataset !== 'object' || dataset === null || Array.isArray(dataset)) {
+          throw new ServiceError('INVALID', 'dataset.register 需要 dataset 对象（{id: ds-*, version: v1, title, hashPolicy: tree|file|none, locator?, license?, redistributable?}）')
+        }
+        return { ...await exp().datasetRegister(project, dataset) }
+      }
+      default:
+        throw new ServiceError('INVALID', '未知 action：' + JSON.stringify(record['action']))
+    }
+  }
+  return {
+    name: SRW_EXPERIMENT_TOOL_NAME,
+    description: [
+      '实验与算力执行面（科研工作台，M7 MVP 单主机）：hosts 盘点 GPU 主机（可达性 + 环境/GPU 快照，输出脱敏）、',
+      'submit 提交实验作业（需审批；spec 门：confirm 确认 + D1-D3 档位缺口显式 ack；GPU 选卡注入 CUDA_VISIBLE_DEVICES；',
+      '脚本先落远端盘再 bash 执行，setsid 脱离会话断线不掉）、status 轮询 7 态（queued/running/succeeded/failed/cancelled/',
+      'interrupted/unknown——pid/exit/done 全缺且日志无增长即 unknown，绝不假成功）、logs 偏移续读（超上限显式失败）、',
+      'collect 回传 metrics.json 与 artifacts（sha256 双向对账）、cancel 取消（需审批，进程组 TERM→KILL）、',
+      'claims.check 论文数字逐点对账（verified/mismatch/unverifiable）、gaps.list 补数据缺口与排期（P0/P1 清零才算补完）、',
+      'dataset.register 数据集注册（license/redistributable 必看）。',
+      '纪律：数据集先注册再引用；失败/缺失不插值不猜；重跑用新 runId（旧 run 保留）；env.setup 未实现（占位）。',
+    ].join(''),
+    parameters: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['hosts', 'submit', 'status', 'logs', 'collect', 'cancel', 'env.setup', 'claims.check', 'gaps.list', 'dataset.register'], description: '要执行的动作' },
+        project: { type: 'string', description: '项目 slug' },
+        expId: { type: 'string', description: '实验 id（^[a-z0-9][a-z0-9-]{0,63}$，如 exp-01）' },
+        runId: { type: 'string', description: '运行 id（^r-*，status/logs/collect/cancel 必填；submit 可选自定义）' },
+        spec: { type: 'object', description: 'submit 的实验规格：{entry:[bash,job.sh], seeds:[0,1,2], datasets:[ds-*], baselines?, metrics:[acc], tier?, gpus?, outputs?, env?, maxHours?, ablation?, significance?, costAnalysis?}' },
+        files: { type: 'array', description: 'submit 可选：上传文本文件 [{path: 相对路径, content: 文本}]（≤20 个、单个 ≤512KiB）' },
+        hostRef: { type: 'string', description: 'submit 可选：目标主机 hostRef（hosts 输出；缺省选第一台可用）' },
+        seed: { type: 'string', description: 'submit 可选：本次 run 的种子（缺省取 spec.seeds[0]）' },
+        confirm: { type: 'boolean', description: 'submit 必须显式 true 才会真正派发（缺省只过门不提交）' },
+        ack: { type: 'boolean', description: 'submit 可选：显式接受 D 档缺口（D_TIER_GAP）或档位警告' },
+        reason: { type: 'string', description: 'cancel 可选：取消原因（进 run.json 审计）' },
+        claim: { type: 'object', description: 'claims.check 可选：注册/更新一条 claim {id: clm-*, kind: number|table-cell, source:{expId, runIds, metric, split?, reducer}, value, digits, tolerance?}' },
+        id: { type: 'string', description: 'claims.check 可选：只查这一条 claim' },
+        dataset: { type: 'object', description: 'dataset.register 必填：{id: ds-*, version: v1, title, hashPolicy: tree|file|none, source?, locator?, license?, redistributable?, splits?, provenance?}' },
+        env: { type: 'boolean', description: 'hosts 可选：false 跳过环境盘点（只测可达性）' },
+      },
+      required: ['action'],
+    },
+    output: { schema: { type: 'object' }, render: jsonRender },
+    timeoutMs: 120_000,
     execute: async (args) => {
       try {
         return { ok: true, value: await run(args) }
