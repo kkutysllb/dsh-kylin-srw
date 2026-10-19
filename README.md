@@ -19,7 +19,7 @@
 - **M9-lite 专利**：公开时序门（safe/grace/risk/blocked）+ 技术交底书 skeleton；先申请后公开，投稿前必查。
 - **查论文 P0**：身份迁移、Unpaywall/OA 全文、检索计划与离线重放、DOI 校验与撤稿门、批量精读断点续跑。
 - 质量门：typecheck 0；**272 测试全绿**（含真引擎 writer-real 与真机 compute-real；无外部依赖时自动 skip）；smoke ALL PASS；CI 已接线（ubuntu+fonts-noto-cjk，首跑三红已修，实录见 docs/05-handoff/01-进度记录.md §1.8）。
-- 未做：M8 投稿返修（**进行中：8.1–8.3 已落地**——快照标签/漂移提示、结构化 diff、审稿响应信证据门，见 docs/02-plan/0207 实录）、UI 面板、专利完整版（检索/权利要求/形式检查/导出）、查论文 P1（引文网络/筛选/综述）。
+- 未做：M8 投稿返修（**进行中：8.1–8.6 已落地**——快照标签/漂移提示、结构化 diff、审稿响应信证据门、投稿材料三件套、format.check 十项、submission.pack 四道 GATE，见 docs/02-plan/0207 实录；余 UI 卡与 E2E/技能）、UI 面板、专利完整版（检索/权利要求/形式检查/导出）、查论文 P1（引文网络/筛选/综述）。
 - 版本 0.0.1（未 tag）；已推送 origin/main（后续 M8 计划已立 docs/02-plan/0207-M8-投稿与返修.md）；发布步骤见 docs/05-handoff/02-交接记录.md §7。
 
 ## 文档索引
