@@ -33,7 +33,11 @@ const CSS = `
   min-height: 0;
   overflow-y: auto;
   box-sizing: border-box;
-  padding: 16px 20px 32px;
+  /* 限宽居中：宽屏/侧边栏收起时左右留白，不顶边（0102 §9.4 壳宽归宿主，
+   * 这里只约束内容列）。窄屏自动回退为近全宽。 */
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: 16px 32px 48px;
   color: var(--srw-fg);
   font-size: 13px;
   line-height: 1.6;
