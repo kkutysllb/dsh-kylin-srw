@@ -87,7 +87,59 @@ interface PaperStateLite {
   readonly outline?: { readonly status: string; readonly revision: number; readonly sections: number; readonly files?: number }
   readonly engine: { readonly engine?: string; readonly probes: readonly { readonly engine: string; readonly available: boolean }[] }
   readonly files: { readonly mainTex: boolean; readonly refsBib: boolean; readonly sections: readonly string[]; readonly buildPdf: boolean }
-  readonly snapshots: readonly { readonly id: string; readonly createdAt: string; readonly files: number }[]
+  readonly snapshots: readonly { readonly id: string; readonly createdAt: string; readonly files: number; readonly label?: string; readonly note?: string }[]
+}
+
+/* ── 8.7 修订/投稿 lite 类型（RPC 返回投影）── */
+
+interface DiffLineLite {
+  readonly op: ' ' | '-' | '+'
+  readonly text: string
+}
+
+interface DiffHunkLite {
+  readonly aStart: number
+  readonly aCount: number
+  readonly bStart: number
+  readonly bCount: number
+  readonly lines: readonly DiffLineLite[]
+}
+
+interface DiffFileLite {
+  readonly path: string
+  readonly status: string
+  readonly hunks: readonly DiffHunkLite[]
+}
+
+interface PaperDiffLite {
+  readonly from: string
+  readonly to: string
+  readonly files: readonly DiffFileLite[]
+  readonly stats: { readonly added: number; readonly removed: number; readonly modified: number; readonly binary: number }
+}
+
+interface FormatCheckLite {
+  readonly venueId: string
+  readonly tier: string
+  readonly checks: readonly ComplianceLite[]
+}
+
+interface SubmissionDraftLite {
+  readonly venueId: string
+  readonly venueConfidence: string
+  readonly tier: string
+  readonly round: number
+  readonly title: string
+  readonly coverLetterBody: string
+  readonly highlights: readonly string[]
+  readonly statements: readonly { readonly id: string; readonly label: string; readonly status: string }[]
+}
+
+interface PackResultLite {
+  readonly dir: string
+  readonly files: readonly string[]
+  readonly warnings: readonly string[]
+  readonly snapshotId: string
 }
 
 interface TeXErrorLite {
@@ -207,6 +259,14 @@ export function WorkbenchView({ ctx }: { readonly ctx: ClientContext }): React.R
   const [compileErrors, setCompileErrors] = useState<readonly TeXErrorLite[]>([])
   const [citeAudit, setCiteAudit] = useState<CiteAuditLite | null>(null)
   const [complianceRows, setComplianceRows] = useState<readonly ComplianceLite[]>([])
+  const [snapshotTagFor, setSnapshotTagFor] = useState<string | null>(null)
+  const [snapshotLabel, setSnapshotLabel] = useState('')
+  const [paperDiffView, setPaperDiffView] = useState<PaperDiffLite | null>(null)
+  const [formatReport, setFormatReport] = useState<FormatCheckLite | null>(null)
+  const [submissionDraft, setSubmissionDraft] = useState<SubmissionDraftLite | null>(null)
+  const [coverLetterText, setCoverLetterText] = useState('')
+  const [highlightsText, setHighlightsText] = useState('')
+  const [packResult, setPackResult] = useState<PackResultLite | null>(null)
   const [watchNotice, setWatchNotice] = useState<string | null>(null)
   const [confirmingWatchId, setConfirmingWatchId] = useState<string | null>(null)
   const [readingSelKey, setReadingSelKey] = useState('')
@@ -892,11 +952,112 @@ export function WorkbenchView({ ctx }: { readonly ctx: ClientContext }): React.R
     if (project === '') return
     setPaperBusy(true)
     try {
-      const result = await rpc<{ restored: readonly string[] }>(ctx, 'paper.snapshot.restore', { project, id })
-      setPaperNotice(`已恢复快照 ${id}（${result.restored.length} 个文件）——建议重新编译核对`)
+      const result = await rpc<{ restored: readonly string[]; materialDrift?: boolean }>(ctx, 'paper.snapshot.restore', { project, id })
+      setPaperNotice(`已恢复快照 ${id}（${result.restored.length} 个文件）${result.materialDrift === true ? '；⚠ materials manifest 与快照不一致——素材需重新 verify' : ''}——建议重新编译核对`)
       await loadPaper(project)
     } catch (cause) {
       setPaperNotice(`回滚失败：${String(cause)}`)
+    } finally {
+      if (alive.current) setPaperBusy(false)
+    }
+  }
+
+  /* ── M8：修订（标签/diff）与投稿（草稿/格式检查/pack）── */
+
+  const snapshotTag = async (id: string): Promise<void> => {
+    const project = overview?.activeProject ?? ''
+    const label = snapshotLabel.trim()
+    if (project === '' || label === '') { setPaperNotice('先填标签名'); return }
+    setPaperBusy(true)
+    try {
+      await rpc(ctx, 'paper.snapshot.tag', { project, id, label })
+      setSnapshotTagFor(null)
+      setSnapshotLabel('')
+      setPaperNotice(`快照 ${id} 已打标签「${label}」——响应信/投稿包用它锚定版本`)
+      await loadPaper(project)
+    } catch (cause) {
+      setPaperNotice(`打标签失败：${String(cause)}`)
+    } finally {
+      if (alive.current) setPaperBusy(false)
+    }
+  }
+
+  const paperDiffRun = async (): Promise<void> => {
+    const project = overview?.activeProject ?? ''
+    const snaps = paperState?.snapshots ?? []
+    if (project === '' || snaps.length < 2) { setPaperNotice('diff 需要至少两次快照——改一节后再编译一次'); return }
+    setPaperBusy(true)
+    try {
+      const diff = await rpc<PaperDiffLite>(ctx, 'paper.diff', { project, from: snaps[1]!.id, to: snaps[0]!.id })
+      setPaperDiffView(diff)
+      setPaperNotice(`diff（${snaps[1]!.id.slice(0, 12)}… → ${snaps[0]!.id.slice(0, 12)}…）：+${diff.stats.added} / −${diff.stats.removed} / 改 ${diff.stats.modified}`)
+    } catch (cause) {
+      setPaperNotice(`diff 失败：${String(cause)}`)
+    } finally {
+      if (alive.current) setPaperBusy(false)
+    }
+  }
+
+  const formatCheckRun = async (): Promise<void> => {
+    const project = overview?.activeProject ?? ''
+    if (project === '') { setPaperNotice('先打开项目'); return }
+    setPaperBusy(true)
+    try {
+      const report = await rpc<FormatCheckLite>(ctx, 'paper.format.check', { project })
+      setFormatReport(report)
+      const failed = report.checks.filter(check => check.pass === false).length
+      setPaperNotice(failed === 0 ? '格式检查：无不过项（缺席项诚实降级）' : `格式检查：${failed} 项不过——按 where 字段整改`)
+    } catch (cause) {
+      setPaperNotice(`格式检查失败：${String(cause)}`)
+    } finally {
+      if (alive.current) setPaperBusy(false)
+    }
+  }
+
+  const submissionShow = async (): Promise<void> => {
+    const project = overview?.activeProject ?? ''
+    if (project === '') { setPaperNotice('先打开项目'); return }
+    setPaperBusy(true)
+    try {
+      const draft = await rpc<SubmissionDraftLite>(ctx, 'paper.submission.show', { project })
+      setSubmissionDraft(draft)
+      setCoverLetterText(draft.coverLetterBody)
+      setHighlightsText(draft.highlights.join('\n'))
+      setPaperNotice(`投稿草稿：round ${draft.round} · ${draft.statements.filter(statement => statement.status === 'needs-author').length} 条声明待作者确认`)
+    } catch (cause) {
+      setPaperNotice(`未起稿或读取失败：${String(cause)}`)
+    } finally {
+      if (alive.current) setPaperBusy(false)
+    }
+  }
+
+  const submissionDraftField = async (field: string, text: string, okNotice: string): Promise<void> => {
+    const project = overview?.activeProject ?? ''
+    if (project === '') { setPaperNotice('先打开项目'); return }
+    setPaperBusy(true)
+    try {
+      const value = await rpc<{ draft: SubmissionDraftLite; warnings: readonly string[] }>(ctx, 'paper.submission.draft', { project, field, text })
+      setSubmissionDraft(value.draft)
+      setPaperNotice(`${okNotice}${value.warnings.length > 0 ? `；⚠ ${value.warnings.join('；')}` : ''}`)
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause)
+      setPaperNotice(`起草失败：${message}`)
+    } finally {
+      if (alive.current) setPaperBusy(false)
+    }
+  }
+
+  const submissionPackRun = async (): Promise<void> => {
+    const project = overview?.activeProject ?? ''
+    if (project === '') { setPaperNotice('先打开项目'); return }
+    setPaperBusy(true)
+    try {
+      const packed = await rpc<PackResultLite>(ctx, 'paper.submission.pack', { project })
+      setPackResult(packed)
+      setPaperNotice(`投稿包已落盘：${packed.dir}（${packed.files.length} 件）${packed.warnings.length > 0 ? `；⚠ ${packed.warnings.join('；')}` : ''}`)
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause)
+      setPaperNotice(`投稿包被拒：${message}`)
     } finally {
       if (alive.current) setPaperBusy(false)
     }
@@ -1375,19 +1536,137 @@ export function WorkbenchView({ ctx }: { readonly ctx: ClientContext }): React.R
         ) : null}
         {paperState !== null && paperState.snapshots.length > 0 ? (
           <div>
-            <p className='srw-detail'>快照（编译成功自动留档，可回滚）：</p>
+            <p className='srw-detail'>
+              快照（编译成功自动留档，可回滚；标签用于响应信/投稿包锚定版本）：
+              {paperState.snapshots.length >= 2 ? (
+                <button className='srw-btn' disabled={paperBusy} onClick={() => { void paperDiffRun() }}>diff 最近两次</button>
+              ) : null}
+            </p>
             <ul className='srw-list'>
               {paperState.snapshots.slice(0, 5).map(snapshot => (
                 <li key={snapshot.id} className='srw-item'>
                   <div className='srw-project-main'>
                     <code>{snapshot.id}</code>
+                    {snapshot.label !== undefined ? <span className='srw-badge'>{snapshot.label}</span> : null}
                     <span className='srw-detail'>{snapshot.files} 个文件 · {snapshot.createdAt.slice(0, 19).replace('T', ' ')}</span>
+                    <button className='srw-btn' disabled={paperBusy} onClick={() => { setSnapshotTagFor(snapshotTagFor === snapshot.id ? null : snapshot.id); setSnapshotLabel(snapshot.label ?? '') }}>打标签</button>
                     <button className='srw-btn' disabled={paperBusy} onClick={() => { void snapshotRestore(snapshot.id) }}>回滚</button>
                   </div>
+                  {snapshotTagFor === snapshot.id ? (
+                    <div className='srw-actions'>
+                      <input
+                        className='srw-input'
+                        placeholder='标签名（≤80 字符，如 baseline / revision-r1）'
+                        value={snapshotLabel}
+                        onChange={event => { setSnapshotLabel(event.target.value) }}
+                      />
+                      <button className='srw-btn primary' disabled={paperBusy || snapshotLabel.trim() === ''} onClick={() => { void snapshotTag(snapshot.id) }}>保存标签</button>
+                    </div>
+                  ) : null}
                 </li>
               ))}
             </ul>
           </div>
+        ) : null}
+        {paperDiffView !== null ? (
+          <div>
+            <p className='srw-detail'>结构化 diff（已持久化到 paper/diffs/——响应信 changes 必须引用这里的 hunk）：</p>
+            <ul className='srw-list'>
+              {paperDiffView.files.map(file => (
+                <li key={file.path} className='srw-item'>
+                  <div className='srw-project-main'>
+                    <code>{file.path}</code>
+                    <span className='srw-badge'>{file.status}</span>
+                    <span className='srw-detail'>{file.hunks.length} hunk</span>
+                  </div>
+                  {file.hunks.slice(0, 2).map((hunk, index) => (
+                    <p key={index} className='srw-detail' style={{ whiteSpace: 'pre-wrap' }}>
+                      {`@@ a${hunk.aStart}(${hunk.aCount}) → b${hunk.bStart}(${hunk.bCount})\n${hunk.lines.map(line => `${line.op} ${line.text}`).join('\n')}`}
+                    </p>
+                  ))}
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+      </div>
+
+      <div className='srw-card'>
+        <h2>投稿（M8）：材料草稿 → 格式检查 → 打包</h2>
+        <p className='srw-detail'>三件套由 submission.draft 起草并自动渲染；数据可得性声明从 experiments/data 自动取证，取不到标「需作者确认」；D2/D3 pack 会阻断缺稿声明与 [TODO 残留。GATE 已过 ≠「改得对」——上传前人工核对。</p>
+        {paperNotice !== null ? <p className='srw-detail'>{paperNotice}</p> : null}
+        <div className='srw-actions'>
+          <button className='srw-btn' disabled={paperBusy} onClick={() => { void submissionShow() }}>草稿状态</button>
+          <button className='srw-btn' disabled={paperBusy || paperState?.files.mainTex !== true} onClick={() => { void formatCheckRun() }}>格式检查</button>
+          <button className='srw-btn primary' disabled={paperBusy || paperState?.files.mainTex !== true} onClick={() => { void submissionPackRun() }}>打投稿包</button>
+        </div>
+        {submissionDraft !== null ? (
+          <div>
+            <p className='srw-project-meta'>
+              <span>{submissionDraft.venueId}（{submissionDraft.tier}）</span>
+              <span>·</span>
+              <span>round {submissionDraft.round}</span>
+              <span>·</span>
+              <span>{submissionDraft.title === '' ? '（标题未识别）' : submissionDraft.title}</span>
+              <span>·</span>
+              <span>{submissionDraft.venueConfidence === 'unverified' ? '⚠ 刊物未核定' : '刊物已核定'}</span>
+            </p>
+            <ul className='srw-list'>
+              {submissionDraft.statements.map(statement => (
+                <li key={statement.id} className='srw-item'>
+                  <div className='srw-project-main'>
+                    <code>{statement.label}</code>
+                    <span className={`srw-badge ${statement.status === 'needs-author' ? 'bad' : ''}`}>
+                      {statement.status === 'authored' ? '已起草' : statement.status === 'evidenced' ? '已取证' : '需作者确认'}
+                    </span>
+                  </div>
+                </li>
+              ))}
+            </ul>
+            <div className='srw-actions'>
+              <textarea
+                className='srw-input'
+                rows={3}
+                placeholder='Cover letter 正文（头部已自动填充）'
+                value={coverLetterText}
+                onChange={event => { setCoverLetterText(event.target.value) }}
+              />
+              <button className='srw-btn' disabled={paperBusy || coverLetterText.trim() === ''} onClick={() => { void submissionDraftField('coverLetter', coverLetterText, 'cover letter 已落盘') }}>保存 cover letter</button>
+            </div>
+            <div className='srw-actions'>
+              <textarea
+                className='srw-input'
+                rows={3}
+                placeholder={'Highlights：3–5 行，每行 ≤100 字符'}
+                value={highlightsText}
+                onChange={event => { setHighlightsText(event.target.value) }}
+              />
+              <button className='srw-btn' disabled={paperBusy || highlightsText.trim() === ''} onClick={() => { void submissionDraftField('highlights', highlightsText, 'highlights 已落盘') }}>保存 highlights</button>
+            </div>
+          </div>
+        ) : (
+          <p className='srw-detail'>尚未起稿——点「草稿状态」报错即表示需要先在会话里用 srw_submission 工具（或此处保存任一字段）起稿。</p>
+        )}
+        {formatReport !== null ? (
+          <ul className='srw-list'>
+            {formatReport.checks.map(check => (
+              <li key={check.id} className='srw-item'>
+                <div className='srw-project-main'>
+                  <code>{check.id}</code>
+                  <span className={`srw-badge ${check.pass === false ? 'bad' : ''}`}>
+                    {check.pass === false ? (check.level === 'error' ? '不过（阻断）' : '不过（建议）') : check.pass === undefined ? '事实缺失' : '通过'}
+                  </span>
+                </div>
+                <p className='srw-detail'>{check.actual} / 期望 {check.expected} → {check.where}</p>
+              </li>
+            ))}
+          </ul>
+        ) : null}
+        {packResult !== null ? (
+          <p className='srw-detail'>
+            包目录：<code>{packResult.dir}</code> · {packResult.files.length} 件 · 基线快照 <code>{packResult.snapshotId}</code>
+            {packResult.warnings.length > 0 ? <span>；⚠ {packResult.warnings.join('；')}</span> : null}
+          </p>
         ) : null}
       </div>
 
