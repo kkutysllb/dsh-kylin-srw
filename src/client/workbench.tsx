@@ -142,6 +142,37 @@ interface PackResultLite {
   readonly snapshotId: string
 }
 
+/* ── UI 面板其余卡 lite 类型（M6/M7/M9-lite/P0 RPC 投影，渲染防御式取值）── */
+
+interface MaterialArtifactLite {
+  readonly id: string
+  readonly kind: string
+  readonly verification?: { readonly status?: string; readonly method?: string }
+}
+
+interface MaterialsManifestLite {
+  readonly artifacts: readonly MaterialArtifactLite[]
+}
+
+interface ExperimentRunLite {
+  readonly runId?: string
+  readonly status?: string
+}
+
+interface PatentMetaLite {
+  readonly patentId: string
+  readonly title: string
+  readonly status: string
+  readonly createdAt?: string
+}
+
+interface SearchPlanLite {
+  readonly planId: string
+  readonly query: Record<string, unknown>
+  readonly sources?: readonly string[]
+  readonly createdAt?: string
+}
+
 interface TeXErrorLite {
   readonly file?: string
   readonly line?: number
@@ -267,6 +298,17 @@ export function WorkbenchView({ ctx }: { readonly ctx: ClientContext }): React.R
   const [coverLetterText, setCoverLetterText] = useState('')
   const [highlightsText, setHighlightsText] = useState('')
   const [packResult, setPackResult] = useState<PackResultLite | null>(null)
+  const [materialsManifest, setMaterialsManifest] = useState<MaterialsManifestLite | null>(null)
+  const [materialsNotice, setMaterialsNotice] = useState<string | null>(null)
+  const [expIdInput, setExpIdInput] = useState('')
+  const [expRuns, setExpRuns] = useState<readonly ExperimentRunLite[]>([])
+  const [expNotice, setExpNotice] = useState<string | null>(null)
+  const [patents, setPatents] = useState<readonly PatentMetaLite[]>([])
+  const [patentIdInput, setPatentIdInput] = useState('')
+  const [patentNotice, setPatentNotice] = useState<string | null>(null)
+  const [planRows, setPlanRows] = useState<readonly SearchPlanLite[]>([])
+  const [fulltextKey, setFulltextKey] = useState('')
+  const [planNotice, setPlanNotice] = useState<string | null>(null)
   const [watchNotice, setWatchNotice] = useState<string | null>(null)
   const [confirmingWatchId, setConfirmingWatchId] = useState<string | null>(null)
   const [readingSelKey, setReadingSelKey] = useState('')
@@ -1063,11 +1105,179 @@ export function WorkbenchView({ ctx }: { readonly ctx: ClientContext }): React.R
     }
   }
 
+  /* ── UI 面板其余卡（M6 素材 / M7 实验 / M9-lite 专利 / P0 计划与全文）：
+   * 面板只做状态与门，生成/提交/写入走会话 Agent（srw_materials / srw_experiment /
+   * srw_patent / srw_literature）。全部渲染防御式取值，错误进各卡 notice。── */
+
+  const materialsLoad = useCallback(async (slug: string): Promise<void> => {
+    try {
+      const manifest = await rpc<MaterialsManifestLite>(ctx, 'materials.list', { project: slug })
+      if (alive.current) {
+        setMaterialsManifest(manifest)
+        const mismatch = manifest.artifacts.filter(artifact => artifact.verification?.status === 'mismatch').length
+        setMaterialsNotice(manifest.artifacts.length === 0
+          ? '清单为空——在会话里用 srw_materials 生成素材'
+          : `共 ${manifest.artifacts.length} 件素材${mismatch > 0 ? `，⚠ ${mismatch} 件 mismatch（阻断插入与投稿包）` : ''}`)
+      }
+    } catch (cause) {
+      if (alive.current) setMaterialsNotice(`清单读取失败：${String(cause)}`)
+    }
+  }, [ctx])
+
+  const materialsVerifyAll = async (): Promise<void> => {
+    const project = overview?.activeProject ?? ''
+    const artifacts = materialsManifest?.artifacts ?? []
+    if (project === '' || artifacts.length === 0) return
+    setPaperBusy(true)
+    try {
+      let mismatch = 0
+      for (const artifact of artifacts) {
+        const result = await rpc<{ verification?: { status?: string } }>(ctx, 'materials.verify', { project, id: artifact.id })
+        if (result.verification?.status === 'mismatch') mismatch += 1
+      }
+      if (alive.current) setMaterialsNotice(`全部复算完成：${artifacts.length} 件${mismatch > 0 ? `，⚠ ${mismatch} 件 mismatch` : '，全部一致'}`)
+      await materialsLoad(project)
+    } catch (cause) {
+      if (alive.current) setMaterialsNotice(`复算失败：${String(cause)}`)
+    } finally {
+      if (alive.current) setPaperBusy(false)
+    }
+  }
+
+  const numbersAuditRun = async (): Promise<void> => {
+    const project = overview?.activeProject ?? ''
+    if (project === '') { setMaterialsNotice('先打开项目'); return }
+    setPaperBusy(true)
+    try {
+      const value = await rpc<unknown>(ctx, 'materials.numbers.audit', { project })
+      if (alive.current) setMaterialsNotice(`裸数字审计：${JSON.stringify(value).slice(0, 300)}`)
+    } catch (cause) {
+      if (alive.current) setMaterialsNotice(`审计失败：${String(cause)}`)
+    } finally {
+      if (alive.current) setPaperBusy(false)
+    }
+  }
+
+  const expStatusLoad = async (): Promise<void> => {
+    const project = overview?.activeProject ?? ''
+    const expId = expIdInput.trim()
+    if (project === '' || expId === '') { setExpNotice('先打开项目并填实验 ID'); return }
+    setPaperBusy(true)
+    try {
+      const value = await rpc<unknown>(ctx, 'experiment.status', { project, expId })
+      const rows: readonly ExperimentRunLite[] = Array.isArray(value)
+        ? value as readonly ExperimentRunLite[]
+        : ((value as { runs?: readonly ExperimentRunLite[] }).runs ?? [value as ExperimentRunLite])
+      if (alive.current) {
+        setExpRuns(rows)
+        setExpNotice(`实验 ${expId}：${rows.length} 个 run`)
+      }
+    } catch (cause) {
+      if (alive.current) setExpNotice(`状态读取失败：${String(cause)}`)
+    } finally {
+      if (alive.current) setPaperBusy(false)
+    }
+  }
+
+  const expGapsLoad = async (): Promise<void> => {
+    const project = overview?.activeProject ?? ''
+    const expId = expIdInput.trim()
+    if (project === '' || expId === '') { setExpNotice('先打开项目并填实验 ID'); return }
+    setPaperBusy(true)
+    try {
+      const value = await rpc<unknown>(ctx, 'experiment.gaps.list', { project, expId })
+      if (alive.current) setExpNotice(`补数据缺口：${JSON.stringify(value).slice(0, 400)}`)
+    } catch (cause) {
+      if (alive.current) setExpNotice(`缺口读取失败：${String(cause)}`)
+    } finally {
+      if (alive.current) setPaperBusy(false)
+    }
+  }
+
+  const patentsLoad = useCallback(async (slug: string): Promise<void> => {
+    try {
+      const value = await rpc<{ patents?: readonly PatentMetaLite[] }>(ctx, 'patent.state', { project: slug })
+      if (alive.current) setPatents(value.patents ?? [])
+    } catch { /* 无专利档案是常态，静默 */ }
+  }, [ctx])
+
+  const patentCheckRun = async (): Promise<void> => {
+    const project = overview?.activeProject ?? ''
+    const patentId = patentIdInput.trim()
+    if (project === '' || patentId === '') { setPatentNotice('先打开项目并填专利 ID'); return }
+    setPaperBusy(true)
+    try {
+      const value = await rpc<unknown>(ctx, 'patent.publication.check', { project, patentId })
+      if (alive.current) setPatentNotice(`公开时序门（${patentId}）：${JSON.stringify(value).slice(0, 400)}`)
+    } catch (cause) {
+      if (alive.current) setPatentNotice(`时序检查失败：${String(cause)}`)
+    } finally {
+      if (alive.current) setPaperBusy(false)
+    }
+  }
+
+  const plansLoad = useCallback(async (slug: string): Promise<void> => {
+    try {
+      const value = await rpc<{ plans: readonly SearchPlanLite[] }>(ctx, 'literature.plan.list', { project: slug })
+      if (alive.current) setPlanRows(value.plans)
+    } catch { /* 无检索计划是常态，静默 */ }
+  }, [ctx])
+
+  const planReplayRun = async (planId: string, online: boolean): Promise<void> => {
+    const project = overview?.activeProject ?? ''
+    if (project === '') { setPlanNotice('先打开项目'); return }
+    setPaperBusy(true)
+    try {
+      const value = online
+        ? await rpc<unknown>(ctx, 'literature.plan.run', { project, planId })
+        : await rpc<unknown>(ctx, 'literature.plan.replay', { project, planId })
+      if (alive.current) setPlanNotice(`${online ? '在线跑' : '离线重放'} ${planId}：${JSON.stringify(value).slice(0, 400)}`)
+    } catch (cause) {
+      if (alive.current) setPlanNotice(`${online ? '在线跑' : '离线重放'}失败：${String(cause)}`)
+    } finally {
+      if (alive.current) setPaperBusy(false)
+    }
+  }
+
+  const fulltextRun = async (): Promise<void> => {
+    const project = overview?.activeProject ?? ''
+    const key = fulltextKey.trim()
+    if (project === '' || key === '') { setPlanNotice('先打开项目并填文献 key'); return }
+    setPaperBusy(true)
+    try {
+      const value = await rpc<{ finalUrl?: string; host?: string; bytes?: number }>(ctx, 'literature.fulltext', { project, key })
+      if (alive.current) setPlanNotice(`OA 全文已取（${value.bytes ?? '?'} bytes，${value.host ?? value.finalUrl ?? ''}）——literature/pdf 可精读`)
+    } catch (cause) {
+      if (alive.current) setPlanNotice(`全文获取失败：${String(cause)}`)
+    } finally {
+      if (alive.current) setPaperBusy(false)
+    }
+  }
+
+  const migrateRun = async (apply: boolean): Promise<void> => {
+    const project = overview?.activeProject ?? ''
+    if (project === '') { setPlanNotice('先打开项目'); return }
+    setPaperBusy(true)
+    try {
+      const value = await rpc<unknown>(ctx, 'literature.migrate', { project, apply })
+      if (alive.current) setPlanNotice(`身份迁移${apply ? '（已应用）' : '预检（未改盘）'}：${JSON.stringify(value).slice(0, 400)}`)
+    } catch (cause) {
+      if (alive.current) setPlanNotice(`迁移失败：${String(cause)}`)
+    } finally {
+      if (alive.current) setPaperBusy(false)
+    }
+  }
+
   /* 活动项目变化 → 刷新文献库列表 */
   useEffect(() => {
     const slug = overview?.activeProject
-    if (slug !== undefined && slug !== '') void refreshLib(slug)
-  }, [overview?.activeProject, refreshLib])
+    if (slug !== undefined && slug !== '') {
+      void refreshLib(slug)
+      void materialsLoad(slug)
+      void patentsLoad(slug)
+      void plansLoad(slug)
+    }
+  }, [overview?.activeProject, refreshLib, materialsLoad, patentsLoad, plansLoad])
 
   /* 刊物注册表（静态）——挂载即取一次 */
   useEffect(() => {
@@ -1668,6 +1878,110 @@ export function WorkbenchView({ ctx }: { readonly ctx: ClientContext }): React.R
             {packResult.warnings.length > 0 ? <span>；⚠ {packResult.warnings.join('；')}</span> : null}
           </p>
         ) : null}
+      </div>
+
+      <div className='srw-card'>
+        <h2>素材证明链（M6）</h2>
+        <p className='srw-detail'>表/图/伪代码/公式由 spec+metrics 确定性生成；verify 用当前输入复算，mismatch 阻断插入与投稿包。生成与插入走会话 Agent（srw_materials），面板只做状态与复算。</p>
+        {materialsNotice !== null ? <p className='srw-detail'>{materialsNotice}</p> : null}
+        <div className='srw-actions'>
+          <button className='srw-btn' disabled={paperBusy || overview?.activeProject === ''} onClick={() => { void materialsLoad(overview?.activeProject ?? '') }}>刷新清单</button>
+          <button className='srw-btn' disabled={paperBusy || (materialsManifest?.artifacts.length ?? 0) === 0} onClick={() => { void materialsVerifyAll() }}>全部复算</button>
+          <button className='srw-btn' disabled={paperBusy || overview?.activeProject === ''} onClick={() => { void numbersAuditRun() }}>裸数字审计</button>
+        </div>
+        {materialsManifest !== null && materialsManifest.artifacts.length > 0 ? (
+          <ul className='srw-list'>
+            {materialsManifest.artifacts.map(artifact => (
+              <li key={artifact.id} className='srw-item'>
+                <div className='srw-project-main'>
+                  <code>{artifact.id}</code>
+                  <span className='srw-badge'>{artifact.kind}</span>
+                  <span className={`srw-badge ${artifact.verification?.status === 'mismatch' ? 'bad' : ''}`}>
+                    {artifact.verification?.status ?? '未验证'}
+                  </span>
+                </div>
+              </li>
+            ))}
+          </ul>
+        ) : null}
+      </div>
+
+      <div className='srw-card'>
+        <h2>实验与算力（M7）</h2>
+        <p className='srw-detail'>单主机 SSH 提交与七态生命周期（unknown 绝不假 succeeded）。提交作业与查看日志走会话 Agent（srw_experiment），面板做状态与补数据缺口。</p>
+        {expNotice !== null ? <p className='srw-detail'>{expNotice}</p> : null}
+        <div className='srw-actions'>
+          <input className='srw-input' placeholder='实验 ID（experiments/&lt;ID&gt;）' value={expIdInput} onChange={event => { setExpIdInput(event.target.value) }} />
+          <button className='srw-btn' disabled={paperBusy || expIdInput.trim() === ''} onClick={() => { void expStatusLoad() }}>查状态</button>
+          <button className='srw-btn' disabled={paperBusy || expIdInput.trim() === ''} onClick={() => { void expGapsLoad() }}>补数据缺口</button>
+        </div>
+        {expRuns.length > 0 ? (
+          <ul className='srw-list'>
+            {expRuns.map((run, index) => (
+              <li key={run.runId ?? index} className='srw-item'>
+                <div className='srw-project-main'>
+                  <code>{run.runId ?? '(run)'}</code>
+                  <span className={`srw-badge ${run.status === 'failed' || run.status === 'cancelled' ? 'bad' : ''}`}>{run.status ?? '未知'}</span>
+                </div>
+              </li>
+            ))}
+          </ul>
+        ) : null}
+      </div>
+
+      <div className='srw-card'>
+        <h2>专利（M9-lite）</h2>
+        <p className='srw-detail'>先申请后公开：投稿/预印本/会议报告/开源之前必须过公开时序门（patent.publication.check）。档案创建与交底书起草走会话 Agent（srw_patent）。</p>
+        {patentNotice !== null ? <p className='srw-detail'>{patentNotice}</p> : null}
+        <div className='srw-actions'>
+          <input className='srw-input' placeholder='专利 ID（.srw/patent/&lt;ID&gt;）' value={patentIdInput} onChange={event => { setPatentIdInput(event.target.value) }} />
+          <button className='srw-btn' disabled={paperBusy || patentIdInput.trim() === ''} onClick={() => { void patentCheckRun() }}>公开时序检查</button>
+        </div>
+        {patents.length > 0 ? (
+          <ul className='srw-list'>
+            {patents.map(patent => (
+              <li key={patent.patentId} className='srw-item'>
+                <div className='srw-project-main'>
+                  <code>{patent.patentId}</code>
+                  <span className='srw-badge'>{patent.status}</span>
+                  <span className='srw-detail'>{patent.title}</span>
+                </div>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className='srw-detail'>当前项目暂无专利档案。</p>
+        )}
+      </div>
+
+      <div className='srw-card'>
+        <h2>检索计划与全文（查论文 P0）</h2>
+        <p className='srw-detail'>检索计划离线重放不触网；在线跑走三源。OA 全文（Unpaywall + 域确认 + PDF 魔数门）取回后可精读。身份迁移默认预检不改盘。</p>
+        {planNotice !== null ? <p className='srw-detail'>{planNotice}</p> : null}
+        {planRows.length > 0 ? (
+          <ul className='srw-list'>
+            {planRows.map(plan => (
+              <li key={plan.planId} className='srw-item'>
+                <div className='srw-project-main'>
+                  <code>{plan.planId}</code>
+                  <span className='srw-detail'>{JSON.stringify(plan.query).slice(0, 120)}{plan.sources !== undefined ? ` · ${plan.sources.join('/')}` : ''}</span>
+                  <button className='srw-btn' disabled={paperBusy} onClick={() => { void planReplayRun(plan.planId, false) }}>离线重放</button>
+                  <button className='srw-btn' disabled={paperBusy} onClick={() => { void planReplayRun(plan.planId, true) }}>在线跑</button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className='srw-detail'>暂无检索计划——在会话里用 srw_literature plan.save 保存。</p>
+        )}
+        <div className='srw-actions'>
+          <input className='srw-input' placeholder='文献 key（取 OA 全文）' value={fulltextKey} onChange={event => { setFulltextKey(event.target.value) }} />
+          <button className='srw-btn' disabled={paperBusy || fulltextKey.trim() === ''} onClick={() => { void fulltextRun() }}>取 OA 全文</button>
+        </div>
+        <div className='srw-actions'>
+          <button className='srw-btn' disabled={paperBusy || overview?.activeProject === ''} onClick={() => { void migrateRun(false) }}>身份迁移预检</button>
+          <button className='srw-btn' disabled={paperBusy || overview?.activeProject === ''} onClick={() => { void migrateRun(true) }}>应用迁移</button>
+        </div>
       </div>
 
       {activeStage !== undefined ? (
