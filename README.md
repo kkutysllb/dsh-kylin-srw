@@ -18,8 +18,9 @@
 - **M7 实验与算力 MVP**：单主机 SSH ①③ 级（ControlMaster 复用/直连）、7 态生命周期、日志偏移续读、指标/产物归集、registry/claims/gaps；真机 RTX 4090 E2E 通过。
 - **M9-lite 专利**：公开时序门（safe/grace/risk/blocked）+ 技术交底书 skeleton；先申请后公开，投稿前必查。
 - **查论文 P0**：身份迁移、Unpaywall/OA 全文、检索计划与离线重放、DOI 校验与撤稿门、批量精读断点续跑。
-- 质量门：typecheck 0；**272 测试全绿**（含真引擎 writer-real 与真机 compute-real；无外部依赖时自动 skip）；smoke ALL PASS；CI 已接线（ubuntu+fonts-noto-cjk，首跑三红已修，实录见 docs/05-handoff/01-进度记录.md §1.8）。
-- 未做：M8 投稿返修（**进行中：8.1–8.6 已落地**——快照标签/漂移提示、结构化 diff、审稿响应信证据门、投稿材料三件套、format.check 十项、submission.pack 四道 GATE，见 docs/02-plan/0207 实录；余 UI 卡与 E2E/技能）、UI 面板、专利完整版（检索/权利要求/形式检查/导出）、查论文 P1（引文网络/筛选/综述）。
+- 质量门：typecheck 0；**282 测试全绿**（含真引擎 writer-real 与真机 compute-real；无外部依赖时自动 skip）；smoke ALL PASS；CI 已接线（ubuntu+fonts-noto-cjk+poppler-utils，全绿）。
+- **M8 投稿与返修**：✅ 已交付（2026-10-19，8.1–8.8 全链）——快照标签/漂移提示、结构化 diff、审稿响应信证据门（RESPONSE_UNBACKED）、投稿材料三件套（数据可得性自动取证）、format.check 十项（激活刊物四死字段）、submission.pack 四道 GATE 七件套、论文卡修订区+投稿卡、真引擎 M8 全链 E2E、submission-fit 技能；见 docs/02-plan/0207 实录。
+- 未做：UI 面板其余卡（素材/实验/专利/计划/全文）、专利完整版（检索/权利要求/形式检查/导出）、查论文 P1（引文网络/筛选/综述）、M8 D3 投稿包独立 fixture（同 D2 路径，P2）。
 - 版本 0.0.1（未 tag）；已推送 origin/main（后续 M8 计划已立 docs/02-plan/0207-M8-投稿与返修.md）；发布步骤见 docs/05-handoff/02-交接记录.md §7。
 
 ## 文档索引
@@ -34,7 +35,7 @@
 | [0204 M3 计划](docs/02-plan/0204-M3-定期抓取.md) | 订阅抓取（触发绑宿主内置「自动化任务」ctx.schedule，执行=host 确定性代码）/ .srw/watch.json / srw_watch 工具 / 撤稿类型区分（corrigendum≠retraction）；**已完成**，文末「M3 实施实录」含 Cordis 围栏等 4 条勘误 |
 | [0205 M4 计划](docs/02-plan/0205-M4-精读.md) | 精读（R6 尖刀）：pdfjs 抽取/双栏识别/source_map 稳定块 ID/翻译链（llm.stream+并发闸）/哈希缓存+术语表/paper.md+校验门/精读视图；**已完成**，文末「M4 实施实录」含活体验收（vaswani 真 PDF 端到端全绿）、按日期归档 PDF（readings/<date>/）、**译注版改造**（版面杂讯/图内碎片/参考文献分类、全文导读+每节速览/精读备注、译注版 PDF 结构）与 3 条勘误 |
 | [0206 M5 计划](docs/02-plan/0206-M5-论文线.md) | 论文线与刊物分级（R4/R5）：TeX 引擎探测（全缺不炸）/venue schema+注册表（confidence+sources 强制）/深度档 D1-D3 三落点/机读合规 checks/骨架生成/编译+日志解析（79 列折行回接）/大纲 G1 确认门/引用审计+一键补 BibTeX/快照回滚（哈希防线）/srw_paper 工具/论文视图/技能 paper-drafting·venue-fit；**已完成**（真引擎活体待装 tectonic 后补验） |
-| [0207 M8 计划](docs/02-plan/0207-M8-投稿与返修.md) | 投稿与返修：快照标签+Myers diff（零依赖）/审稿意见→响应信（RESPONSE_UNBACKED 证据门）/cover letter·highlights·declarations/format.check 激活 venue 四死字段/submission.pack D1–D3 落点；任务 8.1–8.8 bite-sized + **落地前代码事实核对**（srw_paper 15 动作/paper.* 11 case/死字段零消费者实测） |
+| [0207 M8 计划](docs/02-plan/0207-M8-投稿与返修.md) | 投稿与返修：快照标签+结构化 diff（零依赖 LCS）/审稿意见→响应信（RESPONSE_UNBACKED 证据门）/cover letter·highlights·declarations/format.check 激活 venue 四死字段/submission.pack 四道 GATE 七件套；任务 8.1–8.8 + 代码事实核对；**已完成**（8.1–8.8，文末实录含 DoD 对照与两处算法/字段偏离理由） |
 | [05-handoff 进度记录](docs/05-handoff/01-进度记录.md) | 2026-10-18–19 批次日志、质量门演进、真验收记录、事件复盘、明确未做清单 |
 | [05-handoff 交接记录](docs/05-handoff/02-交接记录.md) | 上手/环境事实/验证命令/代码地图/数据契约/已知缺口/风险红线/提交与发布指引 |
 
