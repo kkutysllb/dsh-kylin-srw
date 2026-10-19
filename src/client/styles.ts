@@ -41,23 +41,12 @@ const CSS = `
   color: var(--srw-fg);
   font-size: 13px;
   line-height: 1.6;
-  /* 隐藏式滚动条：默认全透明（不再常驻轨道），悬停面板时浮现细拇指。
-   * Firefox 走 scrollbar-width/color；WebKit 走伪元素。 */
-  scrollbar-width: thin;
-  scrollbar-color: transparent transparent;
+  /* 滚动条彻底隐藏（用户验收拍板）：滚轮/触控板滚动照常，不渲染指示条。
+   * Firefox 走 scrollbar-width:none；WebKit 走伪元素 display:none。 */
+  scrollbar-width: none;
 }
-.srw-panel:hover { scrollbar-color: var(--srw-border) transparent; }
-.srw-panel::-webkit-scrollbar, .srw-log::-webkit-scrollbar { width: 8px; height: 8px; }
-.srw-panel::-webkit-scrollbar-track, .srw-log::-webkit-scrollbar-track { background: transparent; }
-.srw-panel::-webkit-scrollbar-thumb, .srw-log::-webkit-scrollbar-thumb { background: transparent; border-radius: 4px; }
-.srw-panel:hover::-webkit-scrollbar-thumb, .srw-log:hover::-webkit-scrollbar-thumb {
-  background: var(--srw-border);
-}
-.srw-log {
-  scrollbar-width: thin;
-  scrollbar-color: transparent transparent;
-}
-.srw-log:hover { scrollbar-color: var(--srw-border) transparent; }
+.srw-panel::-webkit-scrollbar, .srw-log::-webkit-scrollbar { width: 0; height: 0; display: none; }
+.srw-log { scrollbar-width: none; }
 .srw-panel *, .srw-panel *::before, .srw-panel *::after { box-sizing: inherit; }
 .srw-h1 { font-size: 16px; font-weight: 600; margin: 0 0 4px; }
 .srw-sub { color: var(--srw-fg-muted); margin: 0 0 16px; }
