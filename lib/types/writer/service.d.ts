@@ -169,6 +169,16 @@ export declare class WriterService {
     }>;
     private detectPaperTitle;
     private dataEvidence;
+    /** 8.6：投稿包——七件套落 submissions/<ts>/。门槛顺序判定（首个原因即拒，
+     * 错误码 GATE）：素材插入副本哈希漂移 → 未解决引用 → [TODO 残留 →
+     * D2/D3 声明 needs-author / highlights 缺 → verified 刊物 error 级格式不合规
+     * （unverified 只 warn 放行——刊物事实状态诚实标注）。 */
+    submissionPack(project: string): Promise<{
+        dir: string;
+        files: readonly string[];
+        warnings: readonly string[];
+        snapshotId: string;
+    }>;
     /** 8.3：导出响应信（md|tex）——意见/回复/修改位置+diff 摘要/快照 id 四段；
      * 落盘 response.<ext> 并返回内容与未回复清单。 */
     reviewExport(project: string, round: number, format: 'md' | 'tex'): Promise<{

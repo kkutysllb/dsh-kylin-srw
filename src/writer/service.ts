@@ -8,7 +8,8 @@
  * 模型，工具只提供 IO + 门（0206 执行约定）。 */
 
 import { mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises'
-import { basename, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
+import { createHash } from 'node:crypto'
 import { SLUG_RE } from '../core/schema.ts'
 import { assertInsideRoot, type SrwFsLike } from '../host.ts'
 import { ServiceError } from '../service.ts'
@@ -31,7 +32,7 @@ import {
   renderSubmission,
   type SubmissionDraft,
 } from './submission.ts'
-import { DEPTH_PROFILES } from '../venue/depth.ts'
+import { DEPTH_PROFILES, experimentsChecklist } from '../venue/depth.ts'
 import {
   findComment,
   parseChanges,
@@ -684,6 +685,149 @@ export class WriterService {
     } catch { /* 无 experiments 目录 */ }
     if (await this.readText(join(dir, 'data', 'registry.json')) !== undefined) evidence.push('data/registry.json')
     return evidence
+  }
+
+  /** 8.6：投稿包——七件套落 submissions/<ts>/。门槛顺序判定（首个原因即拒，
+   * 错误码 GATE）：素材插入副本哈希漂移 → 未解决引用 → [TODO 残留 →
+   * D2/D3 声明 needs-author / highlights 缺 → verified 刊物 error 级格式不合规
+   * （unverified 只 warn 放行——刊物事实状态诚实标注）。 */
+  async submissionPack(project: string): Promise<{ dir: string; files: readonly string[]; warnings: readonly string[]; snapshotId: string }> {
+    const dir = this.projectDir(project)
+    const instance = await this.venueOf(project)
+    if (instance === undefined) throw new ServiceError('NOT_FOUND', '先 venue.apply——投稿包依附于刊物')
+    const venue = getVenue(instance.venueId)
+    if (venue === undefined) throw new ServiceError('NOT_FOUND', `刊物不存在：${instance.venueId}`)
+    const tier = instance.tier
+    const draft = await this.submissionShow(project)
+    const snapshots = await this.snapshotList(project)
+    if (snapshots.length === 0) throw new ServiceError('GATE', '无编译快照——先 compile 留档')
+    const snapshotId = snapshots[0]!.id
+    const paperDir = this.paperDir(project)
+
+    // 门 1：素材插入副本与 targetSha256 一致（漂移阻断——诚实链不许带病投稿）
+    const manifestRaw = await this.readText(join(dir, 'materials', 'manifest.json'))
+    if (manifestRaw !== undefined) {
+      let artifacts: readonly { id: string; insertedAt?: readonly { target?: string; targetSha256?: string }[] }[] = []
+      try {
+        artifacts = (JSON.parse(manifestRaw) as { artifacts?: typeof artifacts }).artifacts ?? []
+      } catch { /* 坏 manifest 不在此阻断（materials 域自管） */ }
+      for (const artifact of artifacts) {
+        for (const insert of artifact.insertedAt ?? []) {
+          if (insert.target === undefined || insert.targetSha256 === undefined) continue
+          const bytes = await this.readBytes(join(dir, insert.target))
+          const actual = bytes === undefined ? '(缺失)' : createHash('sha256').update(bytes).digest('hex')
+          if (actual !== insert.targetSha256) {
+            throw new ServiceError('GATE', `素材 ${artifact.id} 插入副本漂移：${insert.target} 与 manifest targetSha256 不符（${actual.slice(0, 12)}…）——先 materials.verify`)
+          }
+        }
+      }
+    }
+
+    // 门 2：未解决引用（编译会出现 ? 引用）
+    const audit = await this.citeAudit(project)
+    if (audit.missing.length > 0) {
+      throw new ServiceError('GATE', `存在未解决引用：${audit.missing.join('、')}——先 refs.append 或补 BibTeX`)
+    }
+
+    // 门 3：正文 [TODO 占位残留（编译输入集合）
+    const inputTexts: string[] = []
+    const mainTex = await this.readText(join(paperDir, 'main.tex'))
+    if (mainTex !== undefined) inputTexts.push(mainTex)
+    const outline = await this.outlineGet(project)
+    for (const section of outline?.sections ?? []) {
+      if (section.file === undefined) continue
+      const text = await this.readText(join(paperDir, section.file))
+      if (text !== undefined) inputTexts.push(text)
+    }
+    const todoHit = inputTexts.find(text => /\[TODO/i.test(text))
+    if (todoHit !== undefined) {
+      throw new ServiceError('GATE', '正文残留 [TODO 占位——占位不得进入投稿包')
+    }
+
+    // 门 4：D2/D3 声明与 highlights
+    if (tier !== 'D1') {
+      const pending = draft.statements.filter(statement => statement.status === 'needs-author')
+      if (pending.length > 0) {
+        throw new ServiceError('GATE', `声明需作者确认：${pending.map(statement => statement.label).join('、')}——D${tier} 投稿包阻断`)
+      }
+      if (draft.highlights.length === 0) {
+        throw new ServiceError('GATE', 'highlights 未起草——D2/D3 投稿包必备（3–5 条）')
+      }
+    }
+
+    // 门 5：格式检查——verified 刊物 error 级阻断；unverified warn 放行
+    const format = await this.formatCheck(project, tier)
+    const warnings: string[] = []
+    const errorFails = format.checks.filter(check => check.level === 'error' && check.pass === false)
+    if (errorFails.length > 0) {
+      const detail = errorFails.map(check => `${check.id}（actual=${check.actual} / expected=${check.expected}）`).join('；')
+      if (venue.confidence === 'verified') {
+        throw new ServiceError('GATE', `verified 刊物格式不合规：${detail}`)
+      }
+      warnings.push(`格式不合规（刊物未核定，仅警告）：${detail}`)
+    }
+    if (venue.confidence === 'unverified') warnings.push('刊物事实未核定——投稿前人工核对作者指南')
+
+    // manuscript：优先当前 build，缺则取最近快照
+    let manuscript = await this.readBytes(join(paperDir, 'build', 'main.pdf'))
+    let manuscriptFrom = 'paper/build/main.pdf'
+    if (manuscript === undefined) {
+      manuscript = await this.readBytes(join(paperDir, 'snapshots', snapshotId, 'build', 'main.pdf'))
+      manuscriptFrom = `snapshots/${snapshotId}/build/main.pdf`
+    }
+    if (manuscript === undefined) {
+      throw new ServiceError('GATE', '无 manuscript（build/main.pdf 与快照均无 PDF）——先 compile')
+    }
+
+    const ts = new Date().toISOString().replace(/[:.]/g, '-')
+    const outDir = join(dir, 'submissions', ts)
+    const written: string[] = []
+    const put = async (name: string, data: Buffer | string): Promise<void> => {
+      const abs = join(outDir, name)
+      await this.guard(abs)
+      await mkdir(dirname(abs), { recursive: true })
+      await writeFile(abs, data)
+      written.push(name)
+    }
+    const readDraftArtifact = async (name: string): Promise<string> => {
+      const content = await this.readText(join(dir, 'submissions', name))
+      if (content === undefined) throw new ServiceError('GATE', `草稿渲染产物缺失：${name}——重跑 submission.draft`)
+      return content
+    }
+    await put('cover-letter.md', await readDraftArtifact('cover-letter.md'))
+    if (tier !== 'D1') {
+      await put('highlights.txt', await readDraftArtifact('highlights.txt'))
+      await put('declarations.tex', await readDraftArtifact('declarations.tex'))
+    }
+    await put('manuscript.pdf', manuscript)
+    const repro = experimentsChecklist(tier)
+    const checks = {
+      format: format.checks,
+      statements: draft.statements.map(statement => ({ id: statement.id, label: statement.label, status: statement.status })),
+      repro,
+    }
+    await put('checks.json', JSON.stringify(checks, null, 2) + '\n')
+    const submission = {
+      schemaVersion: 1,
+      venueId: venue.id,
+      venueConfidence: venue.confidence,
+      tier,
+      round: draft.round,
+      title: draft.title,
+      createdAt: new Date().toISOString(),
+      snapshotId,
+      manuscriptFrom,
+      repro,
+      files: written,
+    }
+    await put('submission.json', JSON.stringify(submission, null, 2) + '\n')
+    const shaLines: string[] = []
+    for (const name of written) {
+      const data = await readFile(join(outDir, name))
+      shaLines.push(`${createHash('sha256').update(data).digest('hex')}  ${name}`)
+    }
+    await put('files.sha256', shaLines.join('\n') + '\n')
+    return { dir: `${project}/submissions/${ts}`, files: written, warnings, snapshotId }
   }
 
   /** 8.3：导出响应信（md|tex）——意见/回复/修改位置+diff 摘要/快照 id 四段；

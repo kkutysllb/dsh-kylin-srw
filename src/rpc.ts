@@ -555,6 +555,8 @@ export async function handleSrwRpc(
         const tier = body['tier'] === 'D1' || body['tier'] === 'D2' || body['tier'] === 'D3' ? body['tier'] : undefined
         return ok(await service.writer.formatCheck(reqString(body, 'project'), tier))
       }
+      case 'paper.submission.pack':
+        return ok(await service.writer.submissionPack(reqString(record(payload), 'project')))
       case 'paper.compliance':
         return ok(await service.writer.compliance(reqString(record(payload), 'project')))
       // ── M9 专利线（M9-lite）：档案 / 交底书 / 公开事件 / 公开时序门 ──

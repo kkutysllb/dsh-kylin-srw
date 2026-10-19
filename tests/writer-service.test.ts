@@ -372,6 +372,69 @@ test('writer：format.check 激活 venue 死字段——十项检查同 complian
   }
 })
 
+test('writer：submission.pack 七件套 + D2 门槛——TODO 残留/声明缺稿阻断（8.6）', async () => {
+  const { service, root } = await makeService()
+  const setup = async (slug: string): Promise<void> => {
+    await service.venueApply(slug, 'ieee-journal', 'D2')
+    await service.scaffold(slug, { title: `Pack ${slug}` })
+    await service.outlineSave(slug, [{ title: 'Intro', intent: '引言', targetWords: 100 }])
+    await service.outlineConfirm(slug)
+    await service.sectionWrite(slug, 's1', '\\section{Intro}\nClean body text.\n')
+    await service.compile(slug)
+  }
+  try {
+    // ── 项目一：完整草稿 → pack 成功（unverified 刊物 warn 放行）──
+    await setup('demo')
+    await mkdir(join(root, 'demo', 'experiments', 'exp-01', 'runs', 'r1'), { recursive: true })
+    await writeFile(join(root, 'demo', 'experiments', 'exp-01', 'runs', 'r1', 'run.json'), '{}\n')
+    await service.submissionDraft('demo', 'coverLetter', 'Fits the scope.')
+    await service.submissionDraft('demo', 'highlights', 'H1\nH2\nH3')
+    await service.submissionDraft('demo', 'statement.codeAvailability', 'Code at the project repo.')
+    // dataAvailability 走自动取证；limitations 需作者写
+    await service.submissionDraft('demo', 'statement.limitations', 'Small sample.')
+    const packed = await service.submissionPack('demo')
+    assert.match(packed.dir, /^demo\/submissions\/\d{4}-/)
+    for (const name of ['submission.json', 'manuscript.pdf', 'cover-letter.md', 'highlights.txt', 'declarations.tex', 'checks.json', 'files.sha256']) {
+      assert.ok(packed.files.includes(name), `七件套齐：${name}`)
+    }
+    const sha = await readFile(join(root, packed.dir, 'files.sha256'), 'utf8')
+    assert.equal(sha.trim().split('\n').length, packed.files.length - 1, 'files.sha256 列其余六件（不自列）')
+    const meta = JSON.parse(await readFile(join(root, packed.dir, 'submission.json'), 'utf8')) as { venueId: string; tier: string; round: number; snapshotId: string }
+    assert.equal(meta.venueId, 'ieee-journal')
+    assert.equal(meta.tier, 'D2')
+    assert.equal(meta.round, 1)
+    assert.ok(meta.snapshotId.length > 0)
+    const pdf = await readFile(join(root, packed.dir, 'manuscript.pdf'))
+    assert.equal(pdf.subarray(0, 5).toString(), '%PDF-', 'manuscript 是真 PDF（假引擎产物）')
+    assert.ok(packed.warnings.some(w => w.includes('未核定')), 'unverified 刊物 → 放行但警告')
+
+    // ── 项目二：TODO 残留 → GATE；声明缺稿 → GATE；补齐后过 ──
+    await setup('demo2')
+    await service.sectionWrite('demo2', 's1', '\\section{Intro}\nBody with [TODO: 待实验数据] marker.\n')
+    await service.compile('demo2')
+    await service.submissionDraft('demo2', 'coverLetter', 'x')
+    await assert.rejects(
+      () => service.submissionPack('demo2'),
+      (error: unknown) => error instanceof ServiceError && error.code === 'GATE' && error.message.includes('TODO'),
+    )
+    await service.sectionWrite('demo2', 's1', '\\section{Intro}\nClean body text.\n')
+    await service.compile('demo2')
+    // 未起稿声明（D2）→ needs-author 阻断
+    await assert.rejects(
+      () => service.submissionPack('demo2'),
+      (error: unknown) => error instanceof ServiceError && error.code === 'GATE' && error.message.includes('需作者确认'),
+    )
+    await service.submissionDraft('demo2', 'highlights', 'A\nB\nC')
+    await service.submissionDraft('demo2', 'statement.codeAvailability', 'repo')
+    await service.submissionDraft('demo2', 'statement.dataAvailability', 'data in repo')
+    await service.submissionDraft('demo2', 'statement.limitations', 'none noted')
+    const ok2 = await service.submissionPack('demo2')
+    assert.ok(ok2.files.includes('submission.json'))
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 test('writer：无引擎 → ENGINE_MISSING（引导安装，不是崩）；outline.prompt 分档', async () => {
   const { service, root } = await makeService()
   try {
