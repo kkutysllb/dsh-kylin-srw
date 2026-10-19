@@ -8,5 +8,9 @@ export interface CapRow {
     readonly name: string;
     readonly available: boolean;
     readonly detail: string;
+    /** unavailable 且属「按设计不注入」时的原因（供诊断面三态渲染：
+     * 绿=可用 / 灰=按设计 / 红=意外缺席）。有 inject 围栏的宿主上，
+     * 未注入服务读属性会抛 without-inject——那是围栏按设计触发，不是故障。 */
+    readonly byDesign?: string;
 }
 export declare function collectCaps(ctx: unknown): readonly CapRow[];

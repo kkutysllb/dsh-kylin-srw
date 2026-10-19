@@ -36,6 +36,9 @@ test('collectCaps：存在服务 true、缺席服务 false、路径探测不抛�
   // 完全缺席
   assert.equal(byName.get('ssh')?.available, false)
   assert.equal(byName.get('llm.stream')?.available, false)
+  // 按设计不注入：缺席行带原因（诊断面三态渲染的灰态）
+  assert.ok(byName.get('llm.stream')?.byDesign?.includes('引擎车道'), 'llm.stream 缺席附设计原因')
+  assert.equal(byName.get('fs.contains')?.byDesign, undefined, '非设计项不带 byDesign')
   // getter 抛错也不炸
   const hostile = new Proxy({}, { get() { throw new Error('boom') } })
   assert.equal(collectCaps(hostile).every(row => row.available === false), true)

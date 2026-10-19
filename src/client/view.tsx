@@ -18,6 +18,7 @@ interface CapsRow {
   readonly name: string
   readonly available: boolean
   readonly detail: string
+  readonly byDesign?: string
 }
 
 interface LogEntry {
@@ -330,8 +331,11 @@ export function DiagView({ ctx, embedded = false }: { readonly ctx: ClientContex
                   {hostCaps.map(row => (
                     <tr key={row.name}>
                       <td>{row.name}</td>
-                      <td><span className={`srw-dot ${row.available ? 'ok' : 'bad'}`} />{row.available ? '可用' : '缺席'}</td>
-                      <td className='srw-detail'>{row.detail}</td>
+                      <td>
+                        <span className={`srw-dot ${row.available ? 'ok' : row.byDesign !== undefined ? 'unknown' : 'bad'}`} />
+                        {row.available ? '可用' : row.byDesign !== undefined ? '按设计不注入' : '缺席'}
+                      </td>
+                      <td className='srw-detail'>{row.byDesign ?? row.detail}</td>
                     </tr>
                   ))}
                 </tbody>
