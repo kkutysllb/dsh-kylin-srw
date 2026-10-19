@@ -47,6 +47,13 @@
       "description": "复现审计工作流：从 spec+runs+registry 审计一次实验是否可复现（代码哈希/种子/环境/数据集哈希），用 claims.check 把论文数字逐点对账，用 gaps.list 列出补数据缺口并按 P0>P1>P2 排期。",
       "whenToUse": "用户要审计实验可复现性、核对论文数字、盘点补数据缺口，或准备投稿前的证明链时使用。",
       "dir": "repro-audit"
+    
+    },
+    {
+      "name": "submission-fit",
+      "description": "投稿整备工作流：cover letter/highlights/声明逐项起草（数据可得性自动取证）、格式检查十项、审稿响应信（引用真实 diff hunk）、四道 GATE 的投稿包。",
+      "whenToUse": "用户要准备投稿材料、写响应信、跑格式检查或打包投稿时使用。",
+      "dir": "submission-fit"
     }
   ]
 }

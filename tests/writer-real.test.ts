@@ -106,3 +106,75 @@ test('writer real-engine：真引擎出真 PDF + 引用解析 + 越界 input GAT
     await rm(root, { recursive: true, force: true })
   }
 })
+
+test('writer real-engine：M8 全链——标签 → diff → 响应信（证据门）→ 投稿包（8.8）', async (t) => {
+  const engine = await findEngine()
+  if (engine === undefined) {
+    t.skip('本机无 TeX 引擎——M8 全链验收需要真编译')
+    return
+  }
+  const root = await mkdtemp(join(tmpdir(), 'srw-real-m8-'))
+  try {
+    const service = await SrwService.open({ fs: fakeFs() }, { rootDir: root })
+    const writer = service.writer
+    await writer.venueApply('demo', 'ieee-journal', 'D1')
+    await writer.scaffold('demo', { title: 'M8 Chain Acceptance' })
+    await writer.outlineConfirm('demo')
+    // 正文必须带真实 \cite——无 \citation 时 BibTeX 报错退出（会让编译整体 fail）
+    await writer.sectionWrite('demo', 's1', '\\section{Introduction}\nBaseline sentence.\\cite{a2017}\n')
+    // scaffold 的 refs.bib 只有占位注释——空库会让 BibTeX 报错退出，写一条真实条目
+    await writeFile(join(root, 'demo', 'paper', 'refs.bib'), [
+      '@article{a2017,',
+      '  author  = {Author, A.},',
+      '  title   = {Placeholder Entry},',
+      '  journal = {J},',
+      '  year    = {2017},',
+      '}',
+      '',
+    ].join('\n'), 'utf8')
+    const first = await writer.compile('demo')
+    assert.equal(first.ok, true, `首次编译失败：${first.log.slice(0, 600)}`)
+    const base = first.snapshot!.id
+    await writer.snapshotTag('demo', base, { label: 'baseline' })
+
+    await writer.sectionWrite('demo', 's1', '\\section{Introduction}\nRevised sentence for reviewers.\\cite{a2017}\n')
+    const second = await writer.compile('demo')
+    assert.equal(second.ok, true, `第二次编译失败：${second.log.slice(0, 600)}`)
+    const revision = second.snapshot!.id
+
+    // diff：单节一句话改动 → 文本侧 1 个 modified；真引擎 PDF 每次都不同 → binary 变更如实入档
+    const diff = await writer.paperDiff('demo', base, revision)
+    const textChanges = diff.files.filter(file => file.status === 'modified')
+    assert.equal(textChanges.length, 1)
+    assert.equal(textChanges[0]!.path, 'sections/01-introduction.tex')
+    assert.equal(textChanges[0]!.hunks.length, 1)
+    assert.ok(diff.files.some(file => file.status === 'binary'), '真引擎 PDF 非确定 → binary 入 diff')
+
+    // 响应信：伪造 hunk 拒绝；真实 hunk 通过并导出
+    await writer.reviewOpen('demo', 1, {
+      venueId: 'ieee-journal',
+      baseSnapshotId: base,
+      reviews: [{ reviewer: 'R1', comments: [{ id: 'C1', text: 'Please revise the intro.' }] }],
+    })
+    await assert.rejects(
+      () => writer.reviewRespond('demo', 1, 'C1', 'done', [{ snapshotId: revision, file: 'sections/01-introduction.tex', hunkIndex: 99 }]),
+      (error: unknown) => error instanceof ServiceError && error.code === 'RESPONSE_UNBACKED',
+    )
+    await writer.reviewRespond('demo', 1, 'C1', 'Revised as suggested.', [
+      { snapshotId: revision, file: 'sections/01-introduction.tex', hunkIndex: 0 },
+    ])
+    const letter = await writer.reviewExport('demo', 1, 'md')
+    assert.ok(letter.content.includes('Revised as suggested.'))
+    assert.equal(letter.unanswered.length, 0)
+
+    // D1 投稿包：无声明/高亮要求，cover letter 起草即可过四道 GATE
+    await writer.submissionDraft('demo', 'coverLetter', 'We submit for consideration.')
+    const packed = await writer.submissionPack('demo')
+    assert.ok(packed.files.includes('manuscript.pdf'))
+    assert.ok(packed.files.includes('files.sha256'))
+    assert.equal(packed.snapshotId, revision)
+    assert.ok(packed.warnings.some(w => w.includes('未核定')), 'unverified 刊物 → 放行但警告')
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
