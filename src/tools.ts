@@ -655,6 +655,21 @@ export function srwSubmissionToolDef(service: SrwService): SrwToolDef {
           hint: exported.unanswered.length === 0 ? '全部意见已回复' : `未回复：${exported.unanswered.join('、')}`,
         }
       }
+      case 'submission.draft': {
+        const field = typeof record['field'] === 'string' ? record['field'] : ''
+        const text = typeof record['text'] === 'string' ? record['text'] : ''
+        const state = await writer().submissionDraft(project, field, text)
+        return {
+          ...state.draft,
+          rendered: state.rendered,
+          warnings: state.warnings,
+          hint: `已落盘并重渲染（${state.rendered.join('、')}）——warnings ${state.warnings.length} 条`,
+        }
+      }
+      case 'submission.show': {
+        const draft = await writer().submissionShow(project)
+        return { ...draft, hint: '当前投稿材料草稿状态（真相源 submissions/draft.json）' }
+      }
       default:
         throw new ServiceError('INVALID', `未知 action：${JSON.stringify(record['action'])}`)
     }
@@ -665,15 +680,17 @@ export function srwSubmissionToolDef(service: SrwService): SrwToolDef {
       '投稿与返修执行面（科研工作台 M8）：审稿轮管理（review.open 落审稿意见结构 +',
       '证据基线快照、review.respond 逐条回复——changes 必须引用 srw_paper action=diff',
       '的真实 file+hunk，否则 RESPONSE_UNBACKED 拒绝、review.export 导出 md/tex 响应信，',
-      '含意见/回复/修改位置+diff 摘要/快照 id）。后续批次：submission.draft/check/pack、',
-      'format.check。纪律：回复内容必须由你自己起草并如实对应真实修改，门只验证引用存在。',
+      '含意见/回复/修改位置+diff 摘要/快照 id）、投稿材料草稿（submission.draft：',
+      'coverLetter/highlights/声明逐项——数据可得性自动取证，取不到标「需作者确认」；',
+      'submission.show 看状态）。后续批次：submission.check/pack、format.check。',
+      '纪律：回复与声明内容必须由你自己起草并如实对应真实情况，门只验证引用与证据存在。',
     ].join(''),
     parameters: {
       type: 'object',
       properties: {
         action: {
           type: 'string',
-          enum: ['review.open', 'review.respond', 'review.export'],
+          enum: ['review.open', 'review.respond', 'review.export', 'submission.draft', 'submission.show'],
           description: '要执行的动作',
         },
         project: { type: 'string', description: '项目 slug' },
@@ -685,6 +702,8 @@ export function srwSubmissionToolDef(service: SrwService): SrwToolDef {
         response: { type: 'string', description: 'review.respond 必填：回复正文（≤8000 字符）' },
         changes: { type: 'array', description: 'review.respond 可选：[{snapshotId, file, hunkIndex, note?}]——必须来自 action=diff 的真实 hunk', items: { type: 'object' } },
         format: { type: 'string', enum: ['md', 'tex'], description: 'review.export 可选：导出格式（默认 md）' },
+        field: { type: 'string', description: 'submission.draft 必填：coverLetter | highlights（换行分隔 3–5 条，每条 ≤100 字符） | statement.<dataAvailability|codeAvailability|limitations|conflictOfInterest|ethics|authorContributions> | title | round' },
+        text: { type: 'string', description: 'submission.draft 必填：对应字段内容' },
       },
       required: ['action'],
     },

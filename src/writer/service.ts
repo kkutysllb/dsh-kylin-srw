@@ -19,6 +19,13 @@ import { auditCites, type CiteAudit } from './cite-audit.ts'
 import { createSnapshot, listSnapshots, restoreSnapshot, tagSnapshot, type SnapshotInfo, type SnapshotManifest } from './snapshot.ts'
 import { diffLines, type PaperDiff, type PaperDiffFile } from './diff.ts'
 import {
+  applyDraftField,
+  newSubmissionDraft,
+  refreshStatements,
+  renderSubmission,
+  type SubmissionDraft,
+} from './submission.ts'
+import {
   findComment,
   parseChanges,
   parseReviewInput,
@@ -489,6 +496,64 @@ export class WriterService {
     const next: ResponsesFile = { ...responses, items }
     await this.writeText(responsesPath, JSON.stringify(next, null, 2) + '\n')
     return next
+  }
+
+  /** 8.4：投稿材料草稿——submissions/draft.json 为状态，每次全量重渲染三件套。
+   * 数据可得性自动取证（experiments run + data/registry.json，authored 优先）；
+   * 取不到 → needs-author + warnings（D2/D3 pack 阻断在 8.6 消费）。 */
+  async submissionDraft(project: string, field: string, text: string): Promise<{ draft: SubmissionDraft; rendered: readonly string[]; warnings: readonly string[] }> {
+    const dir = this.projectDir(project)
+    const instance = await this.venueOf(project)
+    if (instance === undefined) {
+      throw new ServiceError('NOT_FOUND', '先 venue.apply——投稿材料依附于刊物与档位')
+    }
+    const venue = getVenue(instance.venueId)
+    if (venue === undefined) throw new ServiceError('NOT_FOUND', `刊物不存在：${instance.venueId}`)
+    const draftPath = join(dir, 'submissions', 'draft.json')
+    const raw = await this.readText(draftPath)
+    let draft = raw !== undefined
+      ? JSON.parse(raw) as SubmissionDraft
+      : newSubmissionDraft(venue, instance.tier, await this.detectPaperTitle(project))
+    draft = applyDraftField(draft, field, text)
+    const evidence = await this.dataEvidence(project)
+    const refreshed = refreshStatements(draft, evidence)
+    draft = refreshed.draft
+    const rendered = renderSubmission(draft)
+    await this.writeText(draftPath, JSON.stringify(draft, null, 2) + '\n')
+    await this.writeText(join(dir, 'submissions', 'cover-letter.md'), rendered.coverLetter)
+    await this.writeText(join(dir, 'submissions', 'highlights.txt'), rendered.highlights)
+    await this.writeText(join(dir, 'submissions', 'declarations.tex'), rendered.declarations)
+    return {
+      draft,
+      rendered: ['submissions/draft.json', 'submissions/cover-letter.md', 'submissions/highlights.txt', 'submissions/declarations.tex'],
+      warnings: refreshed.warnings,
+    }
+  }
+
+  /** 8.4：读取当前草稿（未起稿 → NOT_FOUND）。 */
+  async submissionShow(project: string): Promise<SubmissionDraft> {
+    const raw = await this.readText(join(this.projectDir(project), 'submissions', 'draft.json'))
+    if (raw === undefined) throw new ServiceError('NOT_FOUND', '投稿材料尚未起稿——先 submission.draft')
+    return JSON.parse(raw) as SubmissionDraft
+  }
+
+  private async detectPaperTitle(project: string): Promise<string> {
+    const main = await this.readText(join(this.paperDir(project), 'main.tex'))
+    const match = main?.match(/\\title\{([^}]*)\}/)
+    return match?.[1]?.trim() ?? ''
+  }
+
+  private async dataEvidence(project: string): Promise<readonly string[]> {
+    const dir = this.projectDir(project)
+    const evidence: string[] = []
+    try {
+      for (const exp of await readdir(join(dir, 'experiments'))) {
+        const runs = await readdir(join(dir, 'experiments', exp, 'runs')).catch(() => [] as string[])
+        if (runs.length > 0) evidence.push(`experiments/${exp}`)
+      }
+    } catch { /* 无 experiments 目录 */ }
+    if (await this.readText(join(dir, 'data', 'registry.json')) !== undefined) evidence.push('data/registry.json')
+    return evidence
   }
 
   /** 8.3：导出响应信（md|tex）——意见/回复/修改位置+diff 摘要/快照 id 四段；

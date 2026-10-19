@@ -13,6 +13,7 @@ import { type CompileOutcome } from './compile.ts';
 import { type CiteAudit } from './cite-audit.ts';
 import { type SnapshotInfo } from './snapshot.ts';
 import { type PaperDiff } from './diff.ts';
+import { type SubmissionDraft } from './submission.ts';
 import { type ResponsesFile, type ReviewEntry } from './review.ts';
 import { type Outline } from './outline.ts';
 import { type ComplianceCheck } from '../venue/compliance.ts';
@@ -146,6 +147,18 @@ export declare class WriterService {
     /** 8.3：回复单条意见。证据门：每条 change 必须能在 paperDiff(base, snapshotId)
      * 中定位 file+hunkIndex，否则 RESPONSE_UNBACKED——只证「引用存在」，不证「改得对」。 */
     reviewRespond(project: string, round: number, commentId: string, response: string, changes: unknown): Promise<ResponsesFile>;
+    /** 8.4：投稿材料草稿——submissions/draft.json 为状态，每次全量重渲染三件套。
+     * 数据可得性自动取证（experiments run + data/registry.json，authored 优先）；
+     * 取不到 → needs-author + warnings（D2/D3 pack 阻断在 8.6 消费）。 */
+    submissionDraft(project: string, field: string, text: string): Promise<{
+        draft: SubmissionDraft;
+        rendered: readonly string[];
+        warnings: readonly string[];
+    }>;
+    /** 8.4：读取当前草稿（未起稿 → NOT_FOUND）。 */
+    submissionShow(project: string): Promise<SubmissionDraft>;
+    private detectPaperTitle;
+    private dataEvidence;
     /** 8.3：导出响应信（md|tex）——意见/回复/修改位置+diff 摘要/快照 id 四段；
      * 落盘 response.<ext> 并返回内容与未回复清单。 */
     reviewExport(project: string, round: number, format: 'md' | 'tex'): Promise<{

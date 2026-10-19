@@ -267,6 +267,72 @@ test('writer：review 响应信——真实 hunk 可回、伪造 hunk 报 RESPON
   }
 })
 
+test('writer：submission.draft 三件套——自动头部/声明证据/高亮校验（8.4）', async () => {
+  const { service, root } = await makeService()
+  try {
+    await service.venueApply('demo', 'ieee-journal', 'D2')
+    await service.scaffold('demo', { title: 'Evidence Paper' })
+    // 取证现场：受管实验 run + 数据登记
+    await mkdir(join(root, 'demo', 'experiments', 'exp-01', 'runs', 'r1'), { recursive: true })
+    await writeFile(join(root, 'demo', 'experiments', 'exp-01', 'runs', 'r1', 'run.json'), '{}\n')
+    await mkdir(join(root, 'demo', 'data'), { recursive: true })
+    await writeFile(join(root, 'demo', 'data', 'registry.json'), '{"datasets":[]}\n')
+
+    // 首笔草稿（写 limitations）→ 声明集按 D2 档位生成；data 可自动取证
+    const state = await service.submissionDraft('demo', 'statement.limitations', 'Small sample size.')
+    assert.equal(state.draft.venueId, 'ieee-journal')
+    assert.equal(state.draft.tier, 'D2')
+    assert.equal(state.draft.venueConfidence, 'unverified')
+    assert.equal(state.draft.title, 'Evidence Paper', '标题从 main.tex 自动识别')
+    assert.deepEqual(state.draft.statements.map(s => s.id).sort(), ['codeAvailability', 'dataAvailability', 'limitations'], 'D2 档位声明集')
+    const data = state.draft.statements.find(s => s.id === 'dataAvailability')!
+    assert.equal(data.status, 'evidenced', '有 experiments run + data registry → 自动取证')
+    assert.ok(data.evidence?.includes('experiments/exp-01'))
+    assert.ok(data.evidence?.includes('data/registry.json'))
+    const code = state.draft.statements.find(s => s.id === 'codeAvailability')!
+    assert.equal(code.status, 'needs-author')
+    assert.ok(code.text.includes('需作者确认'))
+    assert.equal(state.draft.statements.find(s => s.id === 'limitations')?.status, 'authored')
+    assert.ok(state.warnings.some(w => w.includes('需作者确认')), 'needs-author 进 warnings（D2/D3 pack 将阻断）')
+
+    // 渲染产物：cover letter 自动头部（标题/刊物/未核定标注）+ declarations
+    const cover = await readFile(join(root, 'demo', 'submissions', 'cover-letter.md'), 'utf8')
+    assert.ok(cover.includes('Evidence Paper'), '标题自动填充')
+    assert.ok(cover.includes('ieee-journal'), '刊物自动填充')
+    assert.ok(cover.includes('未核定'), 'unverified 刊物事实显式标注')
+    const decl = await readFile(join(root, 'demo', 'submissions', 'declarations.tex'), 'utf8')
+    assert.ok(decl.includes('Data Availability'), '声明 label（venue.lang=en → 英文）')
+    assert.ok(decl.includes('Small sample size.'))
+    assert.ok(decl.includes('experiments/exp-01'), '取证路径回指')
+
+    // highlights：少于 3 / 多于 5 / 超 100 字符 → INVALID；3 条过并落盘
+    await assert.rejects(() => service.submissionDraft('demo', 'highlights', 'a\nb'),
+      (error: unknown) => error instanceof ServiceError && error.code === 'INVALID')
+    await assert.rejects(() => service.submissionDraft('demo', 'highlights', Array.from({ length: 6 }, (_u, i) => `h${i}`).join('\n')),
+      (error: unknown) => error instanceof ServiceError && error.code === 'INVALID')
+    await assert.rejects(() => service.submissionDraft('demo', 'highlights', 'x'.repeat(101)),
+      (error: unknown) => error instanceof ServiceError && error.code === 'INVALID')
+    await service.submissionDraft('demo', 'highlights', 'First finding\nSecond finding\nThird finding')
+    const hi = await readFile(join(root, 'demo', 'submissions', 'highlights.txt'), 'utf8')
+    assert.ok(hi.includes('Third finding'))
+
+    // coverLetter 正文 + round 字段
+    await service.submissionDraft('demo', 'coverLetter', 'We believe this fits the scope because ...')
+    const cover2 = await readFile(join(root, 'demo', 'submissions', 'cover-letter.md'), 'utf8')
+    assert.ok(cover2.includes('We believe this fits'), '正文经 draft 落盘')
+    const r2 = await service.submissionDraft('demo', 'round', '2')
+    assert.equal(r2.draft.round, 2)
+
+    // 未应用刊物 → NOT_FOUND
+    await assert.rejects(
+      () => service.submissionDraft('demo3', 'coverLetter', 'x'),
+      (error: unknown) => error instanceof ServiceError && error.code === 'NOT_FOUND',
+    )
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 test('writer：无引擎 → ENGINE_MISSING（引导安装，不是崩）；outline.prompt 分档', async () => {
   const { service, root } = await makeService()
   try {
