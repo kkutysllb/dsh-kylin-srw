@@ -13,6 +13,7 @@ import { type CompileOutcome } from './compile.ts';
 import { type CiteAudit } from './cite-audit.ts';
 import { type SnapshotInfo } from './snapshot.ts';
 import { type PaperDiff } from './diff.ts';
+import { type ResponsesFile, type ReviewEntry } from './review.ts';
 import { type Outline } from './outline.ts';
 import { type ComplianceCheck } from '../venue/compliance.ts';
 import type { DepthTier } from '../venue/types.ts';
@@ -131,6 +132,28 @@ export declare class WriterService {
         readonly label: string;
         readonly note?: string;
     }): Promise<SnapshotInfo>;
+    private reviewDir;
+    /** 8.3：开审稿轮——落 reviews.json（意见结构 + 证据基线快照）。 */
+    reviewOpen(project: string, round: number, args: {
+        readonly venueId: string;
+        readonly baseSnapshotId: string;
+        readonly reviews: readonly ReviewEntry[];
+    }): Promise<{
+        path: string;
+        round: number;
+        comments: number;
+    }>;
+    /** 8.3：回复单条意见。证据门：每条 change 必须能在 paperDiff(base, snapshotId)
+     * 中定位 file+hunkIndex，否则 RESPONSE_UNBACKED——只证「引用存在」，不证「改得对」。 */
+    reviewRespond(project: string, round: number, commentId: string, response: string, changes: unknown): Promise<ResponsesFile>;
+    /** 8.3：导出响应信（md|tex）——意见/回复/修改位置+diff 摘要/快照 id 四段；
+     * 落盘 response.<ext> 并返回内容与未回复清单。 */
+    reviewExport(project: string, round: number, format: 'md' | 'tex'): Promise<{
+        path: string;
+        bytes: number;
+        content: string;
+        unanswered: readonly string[];
+    }>;
     /** 8.2：两快照结构化 diff——文本走 LCS 行 diff（diff.ts），二进制只比哈希；
      * 结果持久化 paper/diffs/<from>__<to>.json，重复请求幂等返回。响应信证据门
      * （review.respond）以 hunk 定位为准——本方法是其唯一事实源。 */

@@ -204,7 +204,70 @@ test('writer：snapshotTag 打标签 + restore 返回 materialDrift（服务层�
   }
 })
 
-test('writer：paperDiff 结构化 diff——1 hunk 行号正确 + 持久化幂等（8.2）', async () => {
+test('writer：review 响应信——真实 hunk 可回、伪造 hunk 报 RESPONSE_UNBACKED、导出四段齐备（8.3）', async () => {
+  const { service, root } = await makeService()
+  try {
+    await service.venueApply('demo', 'ieee-journal', 'D1')
+    await service.scaffold('demo', { title: 'Reviewed' })
+    await service.outlineSave('demo', [{ title: 'Intro', intent: '引言', targetWords: 100 }])
+    await service.outlineConfirm('demo')
+    await service.sectionWrite('demo', 's1', '\\section{Intro}\nbody\n')
+    const run1 = await service.compile('demo')
+    const base = run1.snapshot!.id
+    await service.sectionWrite('demo', 's1', '\\section{Intro}\nbody revised for reviewers.\n')
+    const run2 = await service.compile('demo')
+    const revision = run2.snapshot!.id
+
+    // 开轮：baseSnapshotId 锚定证据基线
+    await service.reviewOpen('demo', 1, {
+      venueId: 'ieee-journal',
+      baseSnapshotId: base,
+      reviews: [{ reviewer: 'R1', comments: [{ id: 'C1', text: '请改写第 2 行。', area: 'writing' }] }],
+    })
+
+    // 伪造证据：未知文件 / 越界 hunkIndex → RESPONSE_UNBACKED（防「编造已修改」）
+    await assert.rejects(
+      () => service.reviewRespond('demo', 1, 'C1', '已改。', [{ snapshotId: revision, file: 'sections/99-nope.tex', hunkIndex: 0 }]),
+      (error: unknown) => error instanceof ServiceError && error.code === 'RESPONSE_UNBACKED',
+    )
+    await assert.rejects(
+      () => service.reviewRespond('demo', 1, 'C1', '已改。', [{ snapshotId: revision, file: 'sections/01-intro.tex', hunkIndex: 7 }]),
+      (error: unknown) => error instanceof ServiceError && error.code === 'RESPONSE_UNBACKED',
+    )
+    // 未知意见
+    await assert.rejects(
+      () => service.reviewRespond('demo', 1, 'C999', 'x', []),
+      (error: unknown) => error instanceof ServiceError && error.code === 'NOT_FOUND',
+    )
+    // 未开轮
+    await assert.rejects(
+      () => service.reviewRespond('demo', 2, 'C1', 'x', []),
+      (error: unknown) => error instanceof ServiceError && error.code === 'NOT_FOUND',
+    )
+
+    // 真实 hunk → 通过并落盘
+    const saved = await service.reviewRespond('demo', 1, 'C1', '已按意见改写。', [
+      { snapshotId: revision, file: 'sections/01-intro.tex', hunkIndex: 0, note: '整节改写' },
+    ])
+    assert.equal(saved.items.length, 1)
+
+    // 导出 md：审稿意见/回复/修改位置+diff 摘要/快照 id 四段齐备
+    const md = await service.reviewExport('demo', 1, 'md')
+    assert.ok(md.content.includes('C1'), '意见 id')
+    assert.ok(md.content.includes('请改写第 2 行。'), '审稿意见原文')
+    assert.ok(md.content.includes('已按意见改写。'), '回复')
+    assert.ok(md.content.includes('sections/01-intro.tex'), '修改位置')
+    assert.ok(md.content.includes(revision), '快照 id')
+    assert.ok(md.content.includes('- body') && md.content.includes('+ body revised'), 'diff 摘要')
+    assert.equal(md.unanswered.length, 0)
+    const tex = await service.reviewExport('demo', 1, 'tex')
+    assert.ok(tex.content.includes('C1') && tex.content.includes('已按意见改写。'))
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('writer：无引擎 → ENGINE_MISSING（引导安装，不是崩）；outline.prompt 分档', async () => {
   const { service, root } = await makeService()
   try {
     await service.venueApply('demo', 'ieee-journal', 'D1')

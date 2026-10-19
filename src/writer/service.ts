@@ -18,6 +18,18 @@ import { compilePaper, type CompileOutcome } from './compile.ts'
 import { auditCites, type CiteAudit } from './cite-audit.ts'
 import { createSnapshot, listSnapshots, restoreSnapshot, tagSnapshot, type SnapshotInfo, type SnapshotManifest } from './snapshot.ts'
 import { diffLines, type PaperDiff, type PaperDiffFile } from './diff.ts'
+import {
+  findComment,
+  parseChanges,
+  parseReviewInput,
+  renderResponseMd,
+  renderResponseTex,
+  type ResponseChange,
+  type ResponseItem,
+  type ResponsesFile,
+  type ReviewEntry,
+  type ReviewsFile,
+} from './review.ts'
 import { emptyOutline, parseOutline, serializeOutline, confirmOutline, assertConfirmed, outlinePrompt, type Outline, type OutlineSection } from './outline.ts'
 import { extractCitekeys, toBibtex } from '../literature/bibtex.ts'
 import { getVenue, listVenues } from '../venue/registry.ts'
@@ -420,6 +432,87 @@ export class WriterService {
   /** 快照打标签（8.1）：manifest 记 label/note，snapshot.list 可见。 */
   async snapshotTag(project: string, id: string, tag: { readonly label: string; readonly note?: string }): Promise<SnapshotInfo> {
     return await tagSnapshot(this.paperDir(project), id, tag)
+  }
+
+  private reviewDir(project: string, round: number): string {
+    if (!Number.isInteger(round) || round < 1 || round > 99) {
+      throw new ServiceError('INVALID', 'round 必须是 1–99 的整数')
+    }
+    return join(this.projectDir(project), 'reviews', `round-${round}`)
+  }
+
+  /** 8.3：开审稿轮——落 reviews.json（意见结构 + 证据基线快照）。 */
+  async reviewOpen(project: string, round: number, args: { readonly venueId: string; readonly baseSnapshotId: string; readonly reviews: readonly ReviewEntry[] }): Promise<{ path: string; round: number; comments: number }> {
+    const reviews = parseReviewInput(round, args)
+    const dir = this.reviewDir(project, round)
+    const path = join(dir, 'reviews.json')
+    await this.writeText(path, JSON.stringify(reviews, null, 2) + '\n')
+    return { path, round, comments: reviews.reviews.reduce((sum, entry) => sum + entry.comments.length, 0) }
+  }
+
+  /** 8.3：回复单条意见。证据门：每条 change 必须能在 paperDiff(base, snapshotId)
+   * 中定位 file+hunkIndex，否则 RESPONSE_UNBACKED——只证「引用存在」，不证「改得对」。 */
+  async reviewRespond(project: string, round: number, commentId: string, response: string, changes: unknown): Promise<ResponsesFile> {
+    const dir = this.reviewDir(project, round)
+    const reviewsRaw = await this.readText(join(dir, 'reviews.json'))
+    if (reviewsRaw === undefined) throw new ServiceError('NOT_FOUND', `round ${round} 未开轮——先 review.open`)
+    const reviews = JSON.parse(reviewsRaw) as ReviewsFile
+    const found = findComment(reviews, commentId)
+    if (found === undefined) throw new ServiceError('NOT_FOUND', `意见不存在：${commentId}`)
+    const text = typeof response === 'string' ? response.trim() : ''
+    if (text === '' || text.length > 8000) throw new ServiceError('INVALID', 'response 必填且 ≤8000 字符')
+    const parsed: readonly ResponseChange[] = parseChanges(changes)
+    const diffCache = new Map<string, PaperDiff>()
+    for (const [index, change] of parsed.entries()) {
+      let diff = diffCache.get(change.snapshotId)
+      if (diff === undefined) {
+        try {
+          diff = await this.paperDiff(project, reviews.baseSnapshotId, change.snapshotId)
+        } catch (error) {
+          throw new ServiceError('RESPONSE_UNBACKED', `第 ${index + 1} 条 change 无法取证（snapshot ${change.snapshotId} 与基线 ${reviews.baseSnapshotId} 无 diff）：${error instanceof ServiceError ? error.message : String(error)}`)
+        }
+        diffCache.set(change.snapshotId, diff)
+      }
+      const file: PaperDiffFile | undefined = diff.files.find(candidate => candidate.path === change.file)
+      if (file === undefined || file.hunks[change.hunkIndex] === undefined) {
+        throw new ServiceError('RESPONSE_UNBACKED', `第 ${index + 1} 条 change 无 diff 证据：${change.file}#${change.hunkIndex} @ ${change.snapshotId}（基线 ${reviews.baseSnapshotId}）——paper.diff 里不存在这个 hunk`)
+      }
+    }
+    const responsesPath = join(dir, 'responses.json')
+    const responsesRaw = await this.readText(responsesPath)
+    const responses: ResponsesFile = responsesRaw !== undefined
+      ? JSON.parse(responsesRaw) as ResponsesFile
+      : { schemaVersion: 1, round, baseSnapshotId: reviews.baseSnapshotId, items: [] }
+    const item: ResponseItem = { commentId, response: text, changes: parsed }
+    const items = responses.items.filter(existing => existing.commentId !== commentId)
+    items.push(item)
+    const next: ResponsesFile = { ...responses, items }
+    await this.writeText(responsesPath, JSON.stringify(next, null, 2) + '\n')
+    return next
+  }
+
+  /** 8.3：导出响应信（md|tex）——意见/回复/修改位置+diff 摘要/快照 id 四段；
+   * 落盘 response.<ext> 并返回内容与未回复清单。 */
+  async reviewExport(project: string, round: number, format: 'md' | 'tex'): Promise<{ path: string; bytes: number; content: string; unanswered: readonly string[] }> {
+    if (format !== 'md' && format !== 'tex') throw new ServiceError('INVALID', 'format 只支持 md|tex')
+    const dir = this.reviewDir(project, round)
+    const reviewsRaw = await this.readText(join(dir, 'reviews.json'))
+    if (reviewsRaw === undefined) throw new ServiceError('NOT_FOUND', `round ${round} 未开轮——先 review.open`)
+    const reviews = JSON.parse(reviewsRaw) as ReviewsFile
+    const responsesRaw = await this.readText(join(dir, 'responses.json'))
+    const responses: readonly ResponseItem[] = responsesRaw !== undefined ? (JSON.parse(responsesRaw) as ResponsesFile).items : []
+    const diffCache: Record<string, PaperDiff> = {}
+    const snapshotIds = [...new Set(responses.flatMap(item => item.changes.map(change => change.snapshotId)))]
+    for (const snapshotId of snapshotIds) {
+      diffCache[snapshotId] = await this.paperDiff(project, reviews.baseSnapshotId, snapshotId)
+    }
+    const input = { reviews, responses, diffs: diffCache }
+    const content = format === 'md' ? renderResponseMd(input) : renderResponseTex(input)
+    const path = join(dir, `response.${format}`)
+    await this.writeText(path, content + '\n')
+    const answered = new Set(responses.map(item => item.commentId))
+    const unanswered = reviews.reviews.flatMap(entry => entry.comments.filter(comment => !answered.has(comment.id)).map(comment => `${comment.id}（${entry.reviewer}）`))
+    return { path, bytes: Buffer.byteLength(content), content, unanswered }
   }
 
   /** 8.2：两快照结构化 diff——文本走 LCS 行 diff（diff.ts），二进制只比哈希；

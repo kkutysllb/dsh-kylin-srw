@@ -612,6 +612,91 @@ export function srwLiteratureToolDef(service: SrwService): SrwToolDef {
  * 起草（agent 车道：工具只做 IO + 门），G1 确认门在服务层硬编码——未确认
  * 的大纲 section.write 直接拒绝。编译是本机进程（TeX 引擎全缺时报
  * ENGINE_MISSING + 安装引导，不算工具失败）。 */
+/** `srw_submission` 工具：投稿与返修执行面（M8，分批交付：8.3 审稿响应信，
+ * 8.4/8.6 补 draft/check/pack/format）。review.* 全豁免审批——写的是项目域内
+ * reviews/ 草稿；证据门在服务层（RESPONSE_UNBACKED），只证「引用存在」。 */
+export const SRW_SUBMISSION_TOOL_NAME = 'srw_submission'
+
+export function srwSubmissionToolDef(service: SrwService): SrwToolDef {
+  const writer = (): SrwService['writer'] => service.writer
+  const run = async (args: unknown): Promise<Record<string, unknown>> => {
+    const record = typeof args === 'object' && args !== null ? args as Record<string, unknown> : {}
+    const project = typeof record['project'] === 'string' ? record['project'] : ''
+    switch (record['action']) {
+      case 'review.open': {
+        const round = typeof record['round'] === 'number' ? record['round'] : Number.NaN
+        const venueId = typeof record['venueId'] === 'string' ? record['venueId'] : ''
+        const baseSnapshotId = typeof record['baseSnapshotId'] === 'string' ? record['baseSnapshotId'] : ''
+        const reviews = Array.isArray(record['reviews']) ? record['reviews'] as unknown[] : []
+        const opened = await writer().reviewOpen(project, round, {
+          venueId,
+          baseSnapshotId,
+          reviews: reviews as never,
+        })
+        return { ...opened, hint: '轮次已落盘——审稿人意见逐条 review.respond（changes 必须引用 action=diff 的真实 hunk）' }
+      }
+      case 'review.respond': {
+        const round = typeof record['round'] === 'number' ? record['round'] : Number.NaN
+        const commentId = typeof record['commentId'] === 'string' ? record['commentId'] : ''
+        const response = typeof record['response'] === 'string' ? record['response'] : ''
+        const changes = record['changes']
+        const saved = await writer().reviewRespond(project, round, commentId, response, changes)
+        return { round: saved.round, answered: saved.items.length, hint: '已记录——全部意见回复后 review.export 导出响应信' }
+      }
+      case 'review.export': {
+        const round = typeof record['round'] === 'number' ? record['round'] : Number.NaN
+        const format = record['format'] === 'tex' ? 'tex' : 'md'
+        const exported = await writer().reviewExport(project, round, format)
+        return {
+          path: exported.path,
+          bytes: exported.bytes,
+          content: exported.content,
+          unanswered: exported.unanswered,
+          hint: exported.unanswered.length === 0 ? '全部意见已回复' : `未回复：${exported.unanswered.join('、')}`,
+        }
+      }
+      default:
+        throw new ServiceError('INVALID', `未知 action：${JSON.stringify(record['action'])}`)
+    }
+  }
+  return {
+    name: SRW_SUBMISSION_TOOL_NAME,
+    description: [
+      '投稿与返修执行面（科研工作台 M8）：审稿轮管理（review.open 落审稿意见结构 +',
+      '证据基线快照、review.respond 逐条回复——changes 必须引用 srw_paper action=diff',
+      '的真实 file+hunk，否则 RESPONSE_UNBACKED 拒绝、review.export 导出 md/tex 响应信，',
+      '含意见/回复/修改位置+diff 摘要/快照 id）。后续批次：submission.draft/check/pack、',
+      'format.check。纪律：回复内容必须由你自己起草并如实对应真实修改，门只验证引用存在。',
+    ].join(''),
+    parameters: {
+      type: 'object',
+      properties: {
+        action: {
+          type: 'string',
+          enum: ['review.open', 'review.respond', 'review.export'],
+          description: '要执行的动作',
+        },
+        project: { type: 'string', description: '项目 slug' },
+        round: { type: 'number', description: '审稿轮次（1–99）' },
+        venueId: { type: 'string', description: 'review.open 必填：刊物 id' },
+        baseSnapshotId: { type: 'string', description: 'review.open 必填：证据基线快照（首轮基线或上一轮投稿快照，snapshot.list 查询）' },
+        reviews: { type: 'array', description: 'review.open 必填：[{reviewer, comments:[{id, text, area?}]}]', items: { type: 'object' } },
+        commentId: { type: 'string', description: 'review.respond 必填：意见 id' },
+        response: { type: 'string', description: 'review.respond 必填：回复正文（≤8000 字符）' },
+        changes: { type: 'array', description: 'review.respond 可选：[{snapshotId, file, hunkIndex, note?}]——必须来自 action=diff 的真实 hunk', items: { type: 'object' } },
+        format: { type: 'string', enum: ['md', 'tex'], description: 'review.export 可选：导出格式（默认 md）' },
+      },
+      required: ['action'],
+    },
+    output: { schema: { type: 'object' }, render: jsonRender },
+    timeoutMs: 600_000,
+    execute: async (args) => {
+      const value = await run(args)
+      return { type: 'json' as const, value }
+    },
+  }
+}
+
 export const SRW_PAPER_TOOL_NAME = 'srw_paper'
 
 export function srwPaperToolDef(service: SrwService): SrwToolDef {

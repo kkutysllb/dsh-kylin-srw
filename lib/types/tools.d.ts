@@ -94,6 +94,11 @@ export declare function srwLiteratureToolDef(service: SrwService): SrwToolDef;
  * 起草（agent 车道：工具只做 IO + 门），G1 确认门在服务层硬编码——未确认
  * 的大纲 section.write 直接拒绝。编译是本机进程（TeX 引擎全缺时报
  * ENGINE_MISSING + 安装引导，不算工具失败）。 */
+/** `srw_submission` 工具：投稿与返修执行面（M8，分批交付：8.3 审稿响应信，
+ * 8.4/8.6 补 draft/check/pack/format）。review.* 全豁免审批——写的是项目域内
+ * reviews/ 草稿；证据门在服务层（RESPONSE_UNBACKED），只证「引用存在」。 */
+export declare const SRW_SUBMISSION_TOOL_NAME = "srw_submission";
+export declare function srwSubmissionToolDef(service: SrwService): SrwToolDef;
 export declare const SRW_PAPER_TOOL_NAME = "srw_paper";
 export declare function srwPaperToolDef(service: SrwService): SrwToolDef;
 /** `srw_read` 工具：精读执行面（0205 附记 / 引擎车道）。全部动作豁免——
