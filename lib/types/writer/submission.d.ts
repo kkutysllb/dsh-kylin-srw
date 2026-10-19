@@ -49,3 +49,19 @@ export interface RenderedSubmission {
     readonly declarations: string;
 }
 export declare function renderSubmission(draft: SubmissionDraft): RenderedSubmission;
+export interface DocumentClassInfo {
+    readonly cls: string;
+    readonly options: readonly string[];
+}
+export declare function parseDocumentClass(mainTex: string): DocumentClassInfo | undefined;
+/** abstract 环境词数；占位注释行（% 开头）不计；无环境 → undefined。 */
+export declare function abstractWordCount(mainTex: string): number | undefined;
+/** 由 documentclass 推断栏数（设计表：IEEEtran journal / acmart sigconf = 2，
+ * llncs / ctexart / article = 1；PDF 实测列数超出本程）。 */
+export declare function inferredColumns(cls: string, options: readonly string[]): 1 | 2;
+export type RefStyleFamily = 'numeric' | 'authoryear';
+export declare function refStyleFamily(style: string): RefStyleFamily;
+/** PNG pHYs chunk → DPI（pixels-per-meter × 0.0254；unit 非 meter → undefined）。 */
+export declare function pngDpi(bytes: Buffer): number | undefined;
+/** JPEG JFIF APP0 → DPI（units 1=dpi；2=dots/cm ×2.54；其余 undefined）。 */
+export declare function jpegDpi(bytes: Buffer): number | undefined;

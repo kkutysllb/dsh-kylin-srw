@@ -19,12 +19,19 @@ import { auditCites, type CiteAudit } from './cite-audit.ts'
 import { createSnapshot, listSnapshots, restoreSnapshot, tagSnapshot, type SnapshotInfo, type SnapshotManifest } from './snapshot.ts'
 import { diffLines, type PaperDiff, type PaperDiffFile } from './diff.ts'
 import {
+  abstractWordCount,
   applyDraftField,
+  inferredColumns,
+  jpegDpi,
   newSubmissionDraft,
+  parseDocumentClass,
+  pngDpi,
   refreshStatements,
+  refStyleFamily,
   renderSubmission,
   type SubmissionDraft,
 } from './submission.ts'
+import { DEPTH_PROFILES } from '../venue/depth.ts'
 import {
   findComment,
   parseChanges,
@@ -41,6 +48,7 @@ import { emptyOutline, parseOutline, serializeOutline, confirmOutline, assertCon
 import { extractCitekeys, toBibtex } from '../literature/bibtex.ts'
 import { getVenue, listVenues } from '../venue/registry.ts'
 import { runCompliance, STATEMENT_LABELS, type ComplianceCheck, type ComplianceFacts } from '../venue/compliance.ts'
+import type { ComplianceLevel } from '../venue/compliance.ts'
 import type { DepthTier } from '../venue/types.ts'
 
 const VENUE_INSTANCE_VERSION = 1
@@ -535,6 +543,128 @@ export class WriterService {
     const raw = await this.readText(join(this.projectDir(project), 'submissions', 'draft.json'))
     if (raw === undefined) throw new ServiceError('NOT_FOUND', '投稿材料尚未起稿——先 submission.draft')
     return JSON.parse(raw) as SubmissionDraft
+  }
+
+  private async readBytes(path: string): Promise<Buffer | undefined> {
+    await this.guard(path)
+    return await readFile(path).catch(() => undefined)
+  }
+
+  /** 8.5：格式检查——激活 venue 四死字段（columns/pageLimit/referenceStyle/
+   * figureDpi）+ 档位区间（figures/tables/references/pages，启发式 → warn 级）。
+   * 事实只取「编译输入集合」（outline 驱动的节文件 + main + refs.bib，修 N2）；
+   * 页数用 pdfinfo（缺席诚实降级）；栅格图 DPI 解析 PNG pHYs / JPEG JFIF 头。 */
+  async formatCheck(project: string, tier?: DepthTier): Promise<{ venueId: string; tier: DepthTier; checks: readonly ComplianceCheck[] }> {
+    const instance = await this.venueOf(project)
+    if (instance === undefined) throw new ServiceError('NOT_FOUND', '先 venue.apply——格式检查依附于刊物')
+    const venue = getVenue(instance.venueId)
+    if (venue === undefined) throw new ServiceError('NOT_FOUND', `刊物不存在：${instance.venueId}`)
+    const activeTier = tier ?? instance.tier
+    const profile = DEPTH_PROFILES[activeTier]!
+    const dir = this.paperDir(project)
+    const main = await this.readText(join(dir, 'main.tex'))
+    if (main === undefined) throw new ServiceError('NOT_FOUND', 'paper/main.tex 不存在——先 scaffold')
+    const outline = await this.outlineGet(project)
+    const sectionTexts: string[] = []
+    for (const section of outline?.sections ?? []) {
+      if (section.file === undefined) continue
+      const text = await this.readText(join(dir, section.file))
+      if (text !== undefined) sectionTexts.push(text)
+    }
+    const inputTex = [main, ...sectionTexts].join('\n')
+    const checks: ComplianceCheck[] = []
+    const item = (id: string, pass: boolean | undefined, actual: string, expected: string, where: string, errorWhenFail = false): void => {
+      const level: ComplianceLevel = errorWhenFail ? 'error' : 'warn'
+      checks.push(pass === undefined
+        ? { id, level: 'warn', pass: undefined, actual, expected, where }
+        : { id, level: pass ? 'warn' : level, pass, actual, expected, where })
+    }
+
+    // 1/2 模板：documentclass 与 classOptions 子集
+    const dc = parseDocumentClass(main)
+    item('template.class', dc === undefined ? undefined : dc.cls === venue.documentClass, dc?.cls ?? '(未找到 documentclass)', venue.documentClass, 'paper/main.tex', true)
+    if (dc === undefined) {
+      item('template.options', undefined, '(未找到 documentclass)', `⊆ [${venue.classOptions.join(', ')}]`, 'paper/main.tex')
+    } else {
+      const unknown = dc.options.filter(option => !venue.classOptions.includes(option))
+      item('template.options', unknown.length === 0, dc.options.join(', ') || '(无选项)', `⊆ [${venue.classOptions.join(', ')}]`, 'paper/main.tex')
+    }
+
+    // 3 页数：pdfinfo（缺席/无 PDF → undefined，不伪造）
+    let pages: number | undefined
+    const pdfPath = join(dir, 'build', 'main.pdf')
+    if (await this.existsSafe(pdfPath)) {
+      try {
+        const proc = await this.deps.run('pdfinfo', [pdfPath], { timeoutMs: 10_000, cwd: dir })
+        const match = proc.stdout.match(/Pages:\s+(\d+)/)
+        if (match !== null) pages = Number(match[1])
+      } catch { /* 无 pdfinfo */ }
+    }
+    const pageMax = venue.pageLimit !== undefined ? Math.min(venue.pageLimit.regular, profile.pages.max) : profile.pages.max
+    item('pages', pages === undefined ? undefined : pages >= profile.pages.min && pages <= pageMax,
+      pages === undefined ? '(无 build PDF 或无 pdfinfo)' : `${pages} 页`,
+      `${profile.pages.min}–${pageMax} 页${venue.pageLimit !== undefined ? `（刊页限 ${venue.pageLimit.regular}）` : ''}`, 'paper/build/main.pdf')
+
+    // 4 摘要词数
+    const words = abstractWordCount(main)
+    item('abstract.words', venue.abstractWords === undefined || words === undefined ? undefined : words <= venue.abstractWords,
+      words === undefined ? '(无 abstract 环境)' : `${words} 词`,
+      venue.abstractWords !== undefined ? `≤${venue.abstractWords} 词` : '(刊物未限定)', 'paper/main.tex')
+
+    // 5–7 图/表/参考文献计数（编译输入集合，非磁盘全文——修 N2）
+    const figures = (inputTex.match(/\\includegraphics/g) ?? []).length
+    item('figures', figures >= profile.figures.min && figures <= profile.figures.max, `${figures} 幅`, `${profile.figures.min}–${profile.figures.max}（档位启发式）`, '编译输入集合')
+    const tables = (inputTex.match(/\\begin\{table\}/g) ?? []).length
+    item('tables', tables >= profile.tables.min && tables <= profile.tables.max, `${tables} 张`, `${profile.tables.min}–${profile.tables.max}（档位启发式）`, '编译输入集合')
+    const bib = await this.readText(join(dir, 'refs.bib'))
+    const refs = bib === undefined ? 0 : (bib.match(/^@/gm) ?? []).length
+    item('references', refs >= profile.references.min && refs <= profile.references.max, `${refs} 条`, `${profile.references.min}–${profile.references.max}（档位启发式）`, 'paper/refs.bib')
+
+    // 8 引用样式族：数字族禁 \citep；著者-年份族有 \citep 才可核对
+    const family = refStyleFamily(venue.referenceStyle)
+    const usesCitep = /\\citep\b/.test(inputTex)
+    const usesCite = /\\cite\b/.test(inputTex)
+    item('refstyle', family === 'numeric' ? !usesCitep : (usesCitep ? true : undefined),
+      family === 'numeric' ? (usesCitep ? '\\citep 出现（数字族不允许）' : '仅 \\cite 族') : `\\citep=${usesCitep}, \\cite=${usesCite}`,
+      `${venue.referenceStyle}（${family} 族）`, '编译输入集合', true)
+
+    // 9 栅格图 DPI：PNG pHYs / JPEG JFIF；纯矢量或缺文件 → undefined
+    const graphics = [...inputTex.matchAll(/\\includegraphics(?:\[[^\]]*\])?\{([^}]*)\}/g)].map(match => match[1]!.trim())
+    const rasters = graphics.filter(path => /\.(png|jpe?g)$/i.test(path))
+    let dpiPass: boolean | undefined
+    let dpiActual = rasters.length === 0 ? '(无栅格图——按纯矢量处理)' : `${rasters.length} 幅栅格图`
+    if (rasters.length > 0) {
+      if (venue.figureDpi === undefined) {
+        dpiActual += '（刊物未设 DPI 下限）'
+      } else {
+        const dpis: number[] = []
+        let missing = false
+        for (const rel of rasters) {
+          const bytes = await this.readBytes(join(dir, rel))
+          if (bytes === undefined) {
+            missing = true
+            continue
+          }
+          const dpi = pngDpi(bytes) ?? jpegDpi(bytes)
+          if (dpi !== undefined) dpis.push(dpi)
+        }
+        if (missing) dpiActual += '；部分文件缺失，无法核 DPI'
+        else if (dpis.length === 0) dpiActual += '；无法从文件头读 DPI'
+        else {
+          const lowest = Math.min(...dpis)
+          dpiPass = lowest >= venue.figureDpi
+          dpiActual = `最低 ${lowest} DPI / 共 ${rasters.length} 幅`
+        }
+      }
+    }
+    item('figure.dpi', dpiPass, dpiActual, venue.figureDpi !== undefined ? `≥${venue.figureDpi} DPI` : '(刊物未设)', '编译输入的栅格图')
+
+    // 10 栏数：documentclass 推断 vs venue.columns
+    const inferred = dc === undefined ? undefined : inferredColumns(dc.cls, dc.options)
+    item('columns', inferred === undefined ? undefined : inferred === venue.columns,
+      inferred === undefined ? '(未找到 documentclass)' : `${inferred} 栏（按 documentclass 推断）`, `${venue.columns} 栏`, 'paper/main.tex')
+
+    return { venueId: venue.id, tier: activeTier, checks }
   }
 
   private async detectPaperTitle(project: string): Promise<string> {

@@ -181,3 +181,89 @@ export function renderSubmission(draft: SubmissionDraft): RenderedSubmission {
   ].join('\n')
   return { coverLetter, highlights, declarations }
 }
+
+/* ── 8.5 format.check 纯函数面：解析与判定，IO 在 service 层 ── */
+
+export interface DocumentClassInfo {
+  readonly cls: string
+  readonly options: readonly string[]
+}
+
+export function parseDocumentClass(mainTex: string): DocumentClassInfo | undefined {
+  const match = mainTex.match(/\\documentclass\s*(?:\[([^\]]*)\])?\{([^}]*)\}/)
+  if (match === null) return undefined
+  return {
+    cls: match[2]!.trim(),
+    options: (match[1] ?? '').split(',').map(option => option.trim()).filter(option => option !== ''),
+  }
+}
+
+/** abstract 环境词数；占位注释行（% 开头）不计；无环境 → undefined。 */
+export function abstractWordCount(mainTex: string): number | undefined {
+  const match = mainTex.match(/\\begin\{abstract\}([\s\S]*?)\\end\{abstract\}/)
+  if (match === null) return undefined
+  const body = match[1]!.split('\n').filter(line => !line.trim().startsWith('%')).join('\n')
+  return body.split(/\s+/).filter(word => word !== '').length
+}
+
+/** 由 documentclass 推断栏数（设计表：IEEEtran journal / acmart sigconf = 2，
+ * llncs / ctexart / article = 1；PDF 实测列数超出本程）。 */
+export function inferredColumns(cls: string, options: readonly string[]): 1 | 2 {
+  if (cls === 'IEEEtran') return 2
+  if (cls === 'acmart') return options.includes('sigconf') ? 2 : 1
+  return 1
+}
+
+export type RefStyleFamily = 'numeric' | 'authoryear'
+
+export function refStyleFamily(style: string): RefStyleFamily {
+  return style === 'apa' || style === 'authoryear' ? 'authoryear' : 'numeric'
+}
+
+/** PNG pHYs chunk → DPI（pixels-per-meter × 0.0254；unit 非 meter → undefined）。 */
+export function pngDpi(bytes: Buffer): number | undefined {
+  const signature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+  if (bytes.length < signature.length + 8 || !bytes.subarray(0, 8).equals(signature)) return undefined
+  let offset = 8
+  while (offset + 8 <= bytes.length) {
+    const length = bytes.readUInt32BE(offset)
+    const type = bytes.subarray(offset + 4, offset + 8).toString('ascii')
+    if (type === 'pHYs') {
+      if (length < 9) return undefined
+      const xPpm = bytes.readUInt32BE(offset + 8)
+      const unit = bytes.readUInt8(offset + 16)
+      return unit === 1 ? Math.round(xPpm * 0.0254) : undefined
+    }
+    if (type === 'IDAT') break
+    offset += 12 + length
+  }
+  return undefined
+}
+
+/** JPEG JFIF APP0 → DPI（units 1=dpi；2=dots/cm ×2.54；其余 undefined）。 */
+export function jpegDpi(bytes: Buffer): number | undefined {
+  if (bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8) return undefined
+  let offset = 2
+  while (offset + 4 <= bytes.length) {
+    if (bytes[offset] !== 0xff) {
+      offset += 1
+      continue
+    }
+    const marker = bytes[offset + 1]
+    if (marker === undefined || marker === 0xd8 || (marker >= 0xd0 && marker <= 0xd9)) {
+      offset += 2
+      continue
+    }
+    if (marker === 0xda) break
+    const length = bytes.readUInt16BE(offset + 2)
+    if (marker === 0xe0 && bytes.length >= offset + 15) {
+      const units = bytes[offset + 11]
+      const xDensity = bytes.readUInt16BE(offset + 12)
+      if (units === 1) return xDensity
+      if (units === 2) return Math.round(xDensity * 2.54)
+      return undefined
+    }
+    offset += 2 + length
+  }
+  return undefined
+}

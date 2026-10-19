@@ -157,6 +157,16 @@ export declare class WriterService {
     }>;
     /** 8.4：读取当前草稿（未起稿 → NOT_FOUND）。 */
     submissionShow(project: string): Promise<SubmissionDraft>;
+    private readBytes;
+    /** 8.5：格式检查——激活 venue 四死字段（columns/pageLimit/referenceStyle/
+     * figureDpi）+ 档位区间（figures/tables/references/pages，启发式 → warn 级）。
+     * 事实只取「编译输入集合」（outline 驱动的节文件 + main + refs.bib，修 N2）；
+     * 页数用 pdfinfo（缺席诚实降级）；栅格图 DPI 解析 PNG pHYs / JPEG JFIF 头。 */
+    formatCheck(project: string, tier?: DepthTier): Promise<{
+        venueId: string;
+        tier: DepthTier;
+        checks: readonly ComplianceCheck[];
+    }>;
     private detectPaperTitle;
     private dataEvidence;
     /** 8.3：导出响应信（md|tex）——意见/回复/修改位置+diff 摘要/快照 id 四段；

@@ -670,6 +670,18 @@ export function srwSubmissionToolDef(service: SrwService): SrwToolDef {
         const draft = await writer().submissionShow(project)
         return { ...draft, hint: '当前投稿材料草稿状态（真相源 submissions/draft.json）' }
       }
+      case 'format.check': {
+        const tier = record['tier'] === 'D1' || record['tier'] === 'D2' || record['tier'] === 'D3' ? record['tier'] : undefined
+        const report = await writer().formatCheck(project, tier)
+        const failed = report.checks.filter(check => check.pass === false)
+        return {
+          ...report,
+          failedCount: failed.length,
+          hint: failed.length === 0
+            ? '格式检查全部通过（或缺席项诚实降级）——可 submission.pack'
+            : `不过 ${failed.length} 项：${failed.map(check => check.id).join('、')}——按 where 字段整改`,
+        }
+      }
       default:
         throw new ServiceError('INVALID', `未知 action：${JSON.stringify(record['action'])}`)
     }
@@ -682,7 +694,9 @@ export function srwSubmissionToolDef(service: SrwService): SrwToolDef {
       '的真实 file+hunk，否则 RESPONSE_UNBACKED 拒绝、review.export 导出 md/tex 响应信，',
       '含意见/回复/修改位置+diff 摘要/快照 id）、投稿材料草稿（submission.draft：',
       'coverLetter/highlights/声明逐项——数据可得性自动取证，取不到标「需作者确认」；',
-      'submission.show 看状态）。后续批次：submission.check/pack、format.check。',
+      'submission.show 看状态）、格式检查（format.check：模板/页数/摘要/图表计数/',
+      '引用样式/图片 DPI/栏数十项，激活刊物死字段；D2/D3 不过项需整改）。',
+      '后续批次：submission.check/pack。',
       '纪律：回复与声明内容必须由你自己起草并如实对应真实情况，门只验证引用与证据存在。',
     ].join(''),
     parameters: {
@@ -690,7 +704,7 @@ export function srwSubmissionToolDef(service: SrwService): SrwToolDef {
       properties: {
         action: {
           type: 'string',
-          enum: ['review.open', 'review.respond', 'review.export', 'submission.draft', 'submission.show'],
+          enum: ['review.open', 'review.respond', 'review.export', 'submission.draft', 'submission.show', 'format.check'],
           description: '要执行的动作',
         },
         project: { type: 'string', description: '项目 slug' },
@@ -704,6 +718,7 @@ export function srwSubmissionToolDef(service: SrwService): SrwToolDef {
         format: { type: 'string', enum: ['md', 'tex'], description: 'review.export 可选：导出格式（默认 md）' },
         field: { type: 'string', description: 'submission.draft 必填：coverLetter | highlights（换行分隔 3–5 条，每条 ≤100 字符） | statement.<dataAvailability|codeAvailability|limitations|conflictOfInterest|ethics|authorContributions> | title | round' },
         text: { type: 'string', description: 'submission.draft 必填：对应字段内容' },
+        tier: { type: 'string', enum: ['D1', 'D2', 'D3'], description: 'format.check 可选：档位（默认取已应用档位）' },
       },
       required: ['action'],
     },

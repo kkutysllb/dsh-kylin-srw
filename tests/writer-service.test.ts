@@ -333,6 +333,45 @@ test('writer：submission.draft 三件套——自动头部/声明证据/高亮�
   }
 })
 
+test('writer：format.check 激活 venue 死字段——十项检查同 compliance 形状（8.5）', async () => {
+  const { service, root } = await makeService()
+  try {
+    await service.venueApply('demo', 'ieee-journal', 'D2')
+    await service.scaffold('demo', { title: 'Format Target' })
+    await service.outlineSave('demo', [{ title: 'Intro', intent: '引言', targetWords: 100 }])
+    await service.outlineConfirm('demo')
+    await service.sectionWrite('demo', 's1', '\\section{Intro}\nWe cite \\cite{refA} and \\citep{refB}.\n\\begin{table}x\\end{table}\n\\includegraphics{figs/plot.png}\n')
+
+    const report = await service.formatCheck('demo')
+    assert.equal(report.venueId, 'ieee-journal')
+    assert.equal(report.tier, 'D2')
+    const byId = new Map(report.checks.map(c => [c.id, c]))
+    for (const id of ['template.class', 'template.options', 'pages', 'abstract.words', 'figures', 'tables', 'references', 'refstyle', 'figure.dpi', 'columns']) {
+      assert.ok(byId.get(id) !== undefined, `检查项齐全：${id}`)
+    }
+    assert.equal(byId.get('template.class')?.pass, true, 'scaffold 按 venue 渲染 → class 过')
+    assert.equal(byId.get('template.options')?.pass, true, 'classOptions ⊆ venue')
+    assert.equal(byId.get('columns')?.pass, true, 'IEEEtran → 双栏推断 === venue.columns')
+    assert.equal(byId.get('refstyle')?.pass, false, 'ieee 数字族出现 \\citep → 不过')
+    assert.equal(byId.get('figures')?.pass, false, '1 幅 < D2 min 5（档位启发式）')
+    assert.equal(byId.get('figures')?.level, 'warn', '档位区间是启发式 → warn 级')
+    assert.equal(byId.get('tables')?.pass, false, '1 张 < D2 min 3')
+    assert.equal(byId.get('abstract.words')?.pass, true, 'scaffold 占位注释不计词 → 0 ≤ 250')
+    assert.equal(byId.get('pages')?.pass, undefined, '无 build PDF → 诚实降级不伪造')
+    assert.equal(byId.get('figure.dpi')?.pass, undefined, '栅格图文件缺失 → 无法核 DPI 降级')
+
+    // 篡改 documentclass → template.class error 级不过
+    const main = await readFile(join(root, 'demo', 'paper', 'main.tex'), 'utf8')
+    await writeFile(join(root, 'demo', 'paper', 'main.tex'), main.replace('IEEEtran', 'article'))
+    const tampered = await service.formatCheck('demo')
+    const tc = tampered.checks.find(c => c.id === 'template.class')!
+    assert.equal(tc.pass, false)
+    assert.equal(tc.level, 'error')
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 test('writer：无引擎 → ENGINE_MISSING（引导安装，不是崩）；outline.prompt 分档', async () => {
   const { service, root } = await makeService()
   try {

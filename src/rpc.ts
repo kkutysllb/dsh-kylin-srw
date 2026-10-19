@@ -544,6 +544,17 @@ export async function handleSrwRpc(
         const body = record(payload)
         return ok(await service.writer.reviewExport(reqString(body, 'project'), body['round'] as number, body['format'] === 'tex' ? 'tex' : 'md'))
       }
+      case 'paper.submission.draft': {
+        const body = record(payload)
+        return ok(await service.writer.submissionDraft(reqString(body, 'project'), reqString(body, 'field'), reqString(body, 'text')))
+      }
+      case 'paper.submission.show':
+        return ok(await service.writer.submissionShow(reqString(record(payload), 'project')))
+      case 'paper.format.check': {
+        const body = record(payload)
+        const tier = body['tier'] === 'D1' || body['tier'] === 'D2' || body['tier'] === 'D3' ? body['tier'] : undefined
+        return ok(await service.writer.formatCheck(reqString(body, 'project'), tier))
+      }
       case 'paper.compliance':
         return ok(await service.writer.compliance(reqString(record(payload), 'project')))
       // ── M9 专利线（M9-lite）：档案 / 交底书 / 公开事件 / 公开时序门 ──
