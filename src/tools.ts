@@ -714,6 +714,14 @@ export function srwPaperToolDef(service: SrwService): SrwToolDef {
           hint: '标签已写入快照 manifest——snapshot.list 可见；响应信/投稿包用它锚定版本',
         }
       }
+      case 'diff': {
+        const from = typeof record['from'] === 'string' ? record['from'] : ''
+        const to = typeof record['to'] === 'string' ? record['to'] : ''
+        return {
+          ...(await writer().paperDiff(project, from, to)),
+          hint: 'diff 已持久化到 paper/diffs/——审稿响应信的 changes 必须引用这里的 hunk（否则 RESPONSE_UNBACKED）',
+        }
+      }
       case 'compliance': {
         const result = await writer().compliance(project)
         const failed = result.checks.filter(check => check.pass === false)
@@ -735,7 +743,8 @@ export function srwPaperToolDef(service: SrwService): SrwToolDef {
       'outline.confirm 过 G1 门）、逐节起草正文（section.write，G1 未过会拒绝）、',
       '编译（compile，本机 TeX 引擎；错误带 file/line 可定位）、引用审计与一键补',
       'BibTeX（cite.audit / refs.append）、快照回滚与标签（snapshot.list / snapshot.tag /',
-      'snapshot.restore，restore 附 materialDrift 漂移提示）、',
+      'snapshot.restore，restore 附 materialDrift 漂移提示）、快照间结构化 diff（diff，',
+      '文件级 hunks，响应信证据的事实源）、',
       '合规检查（compliance，D1-D3 档位阈值 + 刊物要求，机读 checks）。',
       '纪律：正文内容必须由你自己起草（档位决定篇幅与完备度），工具只落盘；',
       '大纲未经用户确认不要调 outline.confirm。',
@@ -745,7 +754,7 @@ export function srwPaperToolDef(service: SrwService): SrwToolDef {
       properties: {
         action: {
           type: 'string',
-          enum: ['state', 'venue.list', 'venue.apply', 'scaffold', 'outline.get', 'outline.prompt', 'outline.save', 'outline.confirm', 'section.write', 'compile', 'cite.audit', 'refs.append', 'snapshot.list', 'snapshot.tag', 'snapshot.restore', 'compliance'],
+          enum: ['state', 'venue.list', 'venue.apply', 'scaffold', 'outline.get', 'outline.prompt', 'outline.save', 'outline.confirm', 'section.write', 'compile', 'cite.audit', 'refs.append', 'snapshot.list', 'snapshot.tag', 'snapshot.restore', 'diff', 'compliance'],
           description: '要执行的动作',
         },
         project: { type: 'string', description: '项目 slug' },
@@ -760,6 +769,8 @@ export function srwPaperToolDef(service: SrwService): SrwToolDef {
         id: { type: 'string', description: 'snapshot.restore/tag 必填：快照 id' },
         label: { type: 'string', description: 'snapshot.tag 必填：标签名（≤80 字符，如 baseline / revision-r1）' },
         note: { type: 'string', description: 'snapshot.tag 可选：备注（≤500 字符）' },
+        from: { type: 'string', description: 'diff 必填：起始快照 id（snapshot.list 查询）' },
+        to: { type: 'string', description: 'diff 必填：目标快照 id' },
       },
       required: ['action'],
     },

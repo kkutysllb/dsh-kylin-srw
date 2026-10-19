@@ -13,6 +13,7 @@ import { compileCommand } from '../src/writer/engine.ts'
 import { extractCiteKeys, auditCites } from '../src/writer/cite-audit.ts'
 import { createHash } from 'node:crypto'
 import { createSnapshot, listSnapshots, restoreSnapshot, tagSnapshot } from '../src/writer/snapshot.ts'
+import { diffLines } from '../src/writer/diff.ts'
 import { emptyOutline, parseOutline, serializeOutline, confirmOutline, assertConfirmed, outlinePrompt } from '../src/writer/outline.ts'
 import { getVenue } from '../src/venue/registry.ts'
 import { ServiceError } from '../src/service.ts'
@@ -243,6 +244,36 @@ test('snapshot：创建留档带哈希；回滚哈希一致恢复；篡改留档
   } finally {
     await rm(paper, { recursive: true, force: true })
   }
+})
+
+test('diff：行 diff——同文空；改一行 1 hunk 行号正确；尾部纯增/头部纯删；两处改动两 hunk（8.2）', () => {
+  assert.deepEqual(diffLines('a\nb\nc\n', 'a\nb\nc\n'), [], '同文零 hunk')
+  const one = diffLines('a\nold\nc\n', 'a\nnew\nc\n')
+  assert.equal(one.length, 1)
+  assert.equal(one[0]?.aStart, 2)
+  assert.equal(one[0]?.aCount, 1)
+  assert.equal(one[0]?.bStart, 2)
+  assert.equal(one[0]?.bCount, 1)
+  assert.deepEqual(one[0]?.lines, [{ op: '-', text: 'old' }, { op: '+', text: 'new' }])
+
+  const append = diffLines('a\n', 'a\nb\nc\n')
+  assert.equal(append.length, 1)
+  assert.equal(append[0]?.aStart, 2)
+  assert.equal(append[0]?.aCount, 0, '纯增：a 侧不消费行')
+  assert.equal(append[0]?.bStart, 2)
+  assert.equal(append[0]?.bCount, 2)
+
+  const delHead = diffLines('x\ny\n', 'y\n')
+  assert.equal(delHead.length, 1)
+  assert.equal(delHead[0]?.aStart, 1)
+  assert.equal(delHead[0]?.aCount, 1)
+  assert.equal(delHead[0]?.bStart, 1)
+  assert.equal(delHead[0]?.bCount, 0, '纯删：b 侧不消费行')
+
+  const two = diffLines('a\nb\nc\nd\ne\n', 'A\nb\nc\nd\nE\n')
+  assert.equal(two.length, 2, '被上下文隔开的两处改动 → 两个 hunk')
+  assert.deepEqual(two[0]?.lines, [{ op: '-', text: 'a' }, { op: '+', text: 'A' }])
+  assert.deepEqual(two[1]?.lines, [{ op: '-', text: 'e' }, { op: '+', text: 'E' }])
 })
 
 test('snapshot：materialsHash 留档 + 标签 + 回滚漂移检测 materialDrift（8.1）', async () => {

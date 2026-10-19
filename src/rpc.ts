@@ -524,6 +524,10 @@ export async function handleSrwRpc(
         const body = record(payload)
         return ok(await service.writer.snapshotRestore(reqString(body, 'project'), reqString(body, 'id')))
       }
+      case 'paper.diff': {
+        const body = record(payload)
+        return ok(await service.writer.paperDiff(reqString(body, 'project'), reqString(body, 'from'), reqString(body, 'to')))
+      }
       case 'paper.compliance':
         return ok(await service.writer.compliance(reqString(record(payload), 'project')))
       // ── M9 专利线（M9-lite）：档案 / 交底书 / 公开事件 / 公开时序门 ──

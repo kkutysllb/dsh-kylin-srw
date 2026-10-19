@@ -204,6 +204,44 @@ test('writer：snapshotTag 打标签 + restore 返回 materialDrift（服务层�
   }
 })
 
+test('writer：paperDiff 结构化 diff——1 hunk 行号正确 + 持久化幂等（8.2）', async () => {
+  const { service, root } = await makeService()
+  try {
+    await service.venueApply('demo', 'ieee-journal', 'D1')
+    await service.scaffold('demo', { title: 'Diffed' })
+    await service.outlineSave('demo', [{ title: 'Intro', intent: '引言', targetWords: 100 }])
+    await service.outlineConfirm('demo')
+    await service.sectionWrite('demo', 's1', '\\section{Intro}\nbody\n')
+    const run1 = await service.compile('demo')
+    assert.ok(run1.snapshot !== undefined)
+
+    await service.sectionWrite('demo', 's1', '\\section{Intro}\nbody with one changed sentence.\n')
+    const run2 = await service.compile('demo')
+    assert.ok(run2.snapshot !== undefined)
+
+    const diff = await service.paperDiff('demo', run1.snapshot!.id, run2.snapshot!.id)
+    assert.equal(diff.files.length, 1, '只改了一节 → 只有一个变更文件（PDF 哈希相同不算）')
+    assert.equal(diff.files[0]?.path, 'sections/01-intro.tex')
+    assert.equal(diff.files[0]?.status, 'modified')
+    const hunk = diff.files[0]?.hunks[0]
+    assert.equal(hunk?.aStart, 2, 'A8：改一句话 → 1 hunk 行号正确')
+    assert.equal(hunk?.lines.filter(line => line.op === '-').length, 1)
+    assert.equal(hunk?.lines.filter(line => line.op === '+').length, 1)
+    assert.equal(diff.stats.modified, 1)
+
+    // 幂等：重复请求返回持久化结果（createdAt 也不变）
+    const again = await service.paperDiff('demo', run1.snapshot!.id, run2.snapshot!.id)
+    assert.deepEqual(again, diff)
+    await assert.rejects(
+      () => service.paperDiff('demo', 'no-such', run2.snapshot!.id),
+      (error: unknown) => error instanceof ServiceError && error.code === 'NOT_FOUND',
+    )
+    assert.ok(root.length > 0)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 test('writer：无引擎 → ENGINE_MISSING（引导安装，不是崩）；outline.prompt 分档', async () => {
   const root = await mkdtemp(join(tmpdir(), 'srw-writer-'))
   try {

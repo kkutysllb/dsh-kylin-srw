@@ -16,7 +16,8 @@ import { probeEngines, type RunPort, type TeXEngine } from './engine.ts'
 import { renderScaffold, isSafeSectionFile, normalizeInputPath, sectionInputPaths, syncInputBlock, type ScaffoldPlan } from './scaffold.ts'
 import { compilePaper, type CompileOutcome } from './compile.ts'
 import { auditCites, type CiteAudit } from './cite-audit.ts'
-import { createSnapshot, listSnapshots, restoreSnapshot, tagSnapshot, type SnapshotInfo } from './snapshot.ts'
+import { createSnapshot, listSnapshots, restoreSnapshot, tagSnapshot, type SnapshotInfo, type SnapshotManifest } from './snapshot.ts'
+import { diffLines, type PaperDiff, type PaperDiffFile } from './diff.ts'
 import { emptyOutline, parseOutline, serializeOutline, confirmOutline, assertConfirmed, outlinePrompt, type Outline, type OutlineSection } from './outline.ts'
 import { extractCitekeys, toBibtex } from '../literature/bibtex.ts'
 import { getVenue, listVenues } from '../venue/registry.ts'
@@ -419,6 +420,65 @@ export class WriterService {
   /** 快照打标签（8.1）：manifest 记 label/note，snapshot.list 可见。 */
   async snapshotTag(project: string, id: string, tag: { readonly label: string; readonly note?: string }): Promise<SnapshotInfo> {
     return await tagSnapshot(this.paperDir(project), id, tag)
+  }
+
+  /** 8.2：两快照结构化 diff——文本走 LCS 行 diff（diff.ts），二进制只比哈希；
+   * 结果持久化 paper/diffs/<from>__<to>.json，重复请求幂等返回。响应信证据门
+   * （review.respond）以 hunk 定位为准——本方法是其唯一事实源。 */
+  async paperDiff(project: string, fromId: string, toId: string): Promise<PaperDiff> {
+    const dir = this.paperDir(project)
+    for (const id of [fromId, toId]) {
+      if (!/^[A-Za-z0-9._-]+$/.test(id) || id === '.' || id === '..') {
+        throw new ServiceError('INVALID', `快照 id 非法：${JSON.stringify(id)}`)
+      }
+    }
+    if (fromId === toId) throw new ServiceError('INVALID', 'from/to 不能是同一快照')
+    const load = async (id: string): Promise<SnapshotManifest> => {
+      const raw = await this.readText(join(dir, 'snapshots', id, 'manifest.json'))
+      if (raw === undefined) throw new ServiceError('NOT_FOUND', `快照不存在：${id}`)
+      return JSON.parse(raw) as SnapshotManifest
+    }
+    const from = await load(fromId)
+    const to = await load(toId)
+    const outPath = join(dir, 'diffs', `${fromId}__${toId}.json`)
+    const cached = await this.readText(outPath)
+    if (cached !== undefined) return JSON.parse(cached) as PaperDiff
+    const paths = [...new Set([...Object.keys(from.files), ...Object.keys(to.files)])].sort()
+    const files: PaperDiffFile[] = []
+    let added = 0
+    let removed = 0
+    let modified = 0
+    let binary = 0
+    for (const path of paths) {
+      const inFrom = from.files[path] !== undefined
+      const inTo = to.files[path] !== undefined
+      if (inFrom && inTo && from.files[path] === to.files[path]) continue
+      if (inFrom !== inTo) {
+        files.push({ path, status: inTo ? 'added' : 'removed', hunks: [] })
+        if (inTo) added += 1
+        else removed += 1
+        continue
+      }
+      if (path.endsWith('.pdf')) {
+        files.push({ path, status: 'binary', hunks: [] })
+        binary += 1
+        continue
+      }
+      const aText = await this.readText(join(dir, 'snapshots', fromId, path)) ?? ''
+      const bText = await this.readText(join(dir, 'snapshots', toId, path)) ?? ''
+      files.push({ path, status: 'modified', hunks: diffLines(aText, bText) })
+      modified += 1
+    }
+    const diff: PaperDiff = {
+      schemaVersion: 1,
+      from: fromId,
+      to: toId,
+      createdAt: new Date().toISOString(),
+      files,
+      stats: { added, removed, modified, binary },
+    }
+    await this.writeText(outPath, JSON.stringify(diff, null, 2) + '\n')
+    return diff
   }
 
   async snapshotRestore(project: string, id: string): Promise<{ restored: readonly string[]; materialDrift?: boolean }> {

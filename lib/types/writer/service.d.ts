@@ -12,6 +12,7 @@ import { type ScaffoldPlan } from './scaffold.ts';
 import { type CompileOutcome } from './compile.ts';
 import { type CiteAudit } from './cite-audit.ts';
 import { type SnapshotInfo } from './snapshot.ts';
+import { type PaperDiff } from './diff.ts';
 import { type Outline } from './outline.ts';
 import { type ComplianceCheck } from '../venue/compliance.ts';
 import type { DepthTier } from '../venue/types.ts';
@@ -130,6 +131,10 @@ export declare class WriterService {
         readonly label: string;
         readonly note?: string;
     }): Promise<SnapshotInfo>;
+    /** 8.2：两快照结构化 diff——文本走 LCS 行 diff（diff.ts），二进制只比哈希；
+     * 结果持久化 paper/diffs/<from>__<to>.json，重复请求幂等返回。响应信证据门
+     * （review.respond）以 hunk 定位为准——本方法是其唯一事实源。 */
+    paperDiff(project: string, fromId: string, toId: string): Promise<PaperDiff>;
     snapshotRestore(project: string, id: string): Promise<{
         restored: readonly string[];
         materialDrift?: boolean;
